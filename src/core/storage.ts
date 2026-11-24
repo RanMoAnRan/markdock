@@ -1,3 +1,4 @@
+import type { AiSite, DockTarget } from '../types/ai';
 import type {
   RecycleBinEntry,
   ScanSettings,
@@ -5,6 +6,7 @@ import type {
   VisitStatsMap,
   WhitelistEntry,
 } from '../types/bookmark';
+import { mergeStoredAiSites } from './aiSites';
 import { DEFAULT_SCAN_SETTINGS } from './checker';
 
 const KEYS = {
@@ -18,9 +20,26 @@ const KEYS = {
   sidebarTheme: 'bcp_sidebar_theme',
   pendingLocateFolder: 'bcp_pending_locate_folder',
   visitStats: 'bcp_visit_stats',
+  aiSites: 'bcp_ai_sites',
+  dockCollapsed: 'bcp_dock_collapsed',
+  activeDockId: 'bcp_active_dock_id',
+  lastAiId: 'bcp_last_ai_id',
+  dockPosition: 'bcp_dock_position',
 } as const;
 
 export type SidebarTheme = 'system' | 'light' | 'dark';
+export type DockPosition = 'auto' | 'left' | 'right';
+export type EffectiveDockPosition = 'left' | 'right';
+
+export function resolveEffectiveDockPosition(
+  pref: DockPosition,
+  browserSide?: 'left' | 'right' | null,
+): EffectiveDockPosition {
+  if (pref === 'left' || pref === 'right') {
+    return pref;
+  }
+  return browserSide === 'left' ? 'left' : 'right';
+}
 
 async function storageGet<T>(key: string, fallback: T): Promise<T> {
   if (typeof chrome !== 'undefined' && chrome.storage?.local) {
@@ -82,11 +101,19 @@ export async function saveScanSnapshot(snapshot: ScanSnapshot | null): Promise<v
 
 export function reconcileSnapshot(
   snapshot: ScanSnapshot,
-  liveBookmarkIds: Set<string>,
+  liveBookmarks: Map<string, string> | Set<string>,
 ): ScanSnapshot {
+  if (liveBookmarks instanceof Map) {
+    return {
+      ...snapshot,
+      results: snapshot.results.filter(
+        (r) => liveBookmarks.get(r.bookmark.id) === r.bookmark.url,
+      ),
+    };
+  }
   return {
     ...snapshot,
-    results: snapshot.results.filter((r) => liveBookmarkIds.has(r.bookmark.id)),
+    results: snapshot.results.filter((r) => liveBookmarks.has(r.bookmark.id)),
   };
 }
 
@@ -130,25 +157,35 @@ export async function saveSidebarTheme(theme: SidebarTheme): Promise<void> {
 interface PendingLocatePayload {
   folderId: string;
   requestedAt: number;
+  windowId?: number;
 }
 
 export async function savePendingLocateFolder(
   folderId: string | null,
+  windowId?: number,
 ): Promise<void> {
   await storageSet<PendingLocatePayload | null>(
     KEYS.pendingLocateFolder,
-    folderId ? { folderId, requestedAt: Date.now() } : null,
+    folderId ? { folderId, requestedAt: Date.now(), windowId } : null,
   );
 }
 
 export async function consumePendingLocateFolder(
   maxAgeMs = 15_000,
+  currentWindowId?: number,
 ): Promise<string | null> {
   const payload = await storageGet<PendingLocatePayload | null>(
     KEYS.pendingLocateFolder,
     null,
   );
   if (!payload) return null;
+  if (
+    typeof payload.windowId === 'number' &&
+    typeof currentWindowId === 'number' &&
+    payload.windowId !== currentWindowId
+  ) {
+    return null;
+  }
   await storageSet<PendingLocatePayload | null>(KEYS.pendingLocateFolder, null);
   if (Date.now() - payload.requestedAt > maxAgeMs) return null;
   return payload.folderId;
@@ -161,4 +198,52 @@ export async function loadVisitStats(): Promise<VisitStatsMap> {
 
 export async function saveVisitStats(stats: VisitStatsMap): Promise<void> {
   await storageSet(KEYS.visitStats, stats);
+}
+
+export async function loadAiSites(): Promise<AiSite[]> {
+  const raw = await storageGet<AiSite[] | null>(KEYS.aiSites, null);
+  return mergeStoredAiSites(raw);
+}
+
+export async function saveAiSites(sites: AiSite[]): Promise<void> {
+  await storageSet(KEYS.aiSites, sites);
+}
+
+export async function loadDockCollapsed(): Promise<boolean> {
+  const raw = await storageGet<boolean>(KEYS.dockCollapsed, false);
+  return Boolean(raw);
+}
+
+export async function saveDockCollapsed(collapsed: boolean): Promise<void> {
+  await storageSet(KEYS.dockCollapsed, collapsed);
+}
+
+export async function loadActiveDockId(): Promise<DockTarget> {
+  const raw = await storageGet<string>(KEYS.activeDockId, 'bookmarks');
+  return typeof raw === 'string' && raw.trim() ? raw : 'bookmarks';
+}
+
+export async function saveActiveDockId(target: DockTarget): Promise<void> {
+  await storageSet(KEYS.activeDockId, target);
+}
+
+export async function loadLastAiId(): Promise<string | null> {
+  const raw = await storageGet<string | null>(KEYS.lastAiId, null);
+  return typeof raw === 'string' && raw.trim() ? raw : null;
+}
+
+export async function saveLastAiId(id: string | null): Promise<void> {
+  await storageSet<string | null>(KEYS.lastAiId, id);
+}
+
+export async function loadDockPosition(): Promise<DockPosition> {
+  const value = await storageGet<string>(KEYS.dockPosition, 'auto');
+  if (value === 'auto' || value === 'left' || value === 'right') {
+    return value;
+  }
+  return 'auto';
+}
+
+export async function saveDockPosition(position: DockPosition): Promise<void> {
+  await storageSet<DockPosition>(KEYS.dockPosition, position);
 }

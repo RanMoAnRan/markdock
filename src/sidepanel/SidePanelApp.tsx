@@ -15,29 +15,41 @@ import {
   FolderOpen,
   FolderPlus,
   FolderTree,
-  Keyboard,
   LocateFixed,
-  Minus,
-  Monitor,
-  Moon,
+  PanelLeftOpen,
+  PanelRightOpen,
   Pencil,
   Pin,
   PinOff,
-  Plus,
+  Power,
   Radar,
   RotateCcw,
+  RotateCw,
   Search,
-  Sun,
+  Settings,
   Trash2,
-  Type,
   X,
 } from 'lucide-react';
+import type { AiSite, DockTarget } from '../types/ai';
 import type {
   BookmarkItem,
   FolderNode,
   RecycleBinEntry,
   VisitStatsMap,
 } from '../types/bookmark';
+import {
+  DEFAULT_AI_SITES,
+  addCustomAiSite,
+  deleteAiSite,
+  normalizeAiUrl,
+  pruneLoadedAiIds,
+  reorderAiSites,
+  resetBuiltInAiSites,
+  resolveActiveDockTarget,
+  resolvePreferredAiSiteId,
+  toggleAiSite,
+  updateAiSite,
+} from '../core/aiSites';
 import {
   computeBookmarkMoveTarget,
   createBookmarkItem,
@@ -54,34 +66,51 @@ import {
 } from '../core/bookmarks';
 import { findMatchingBookmarksByUrl } from '../core/duplicates';
 import {
-  restoreRecycleBinEntry,
+  RecycleBinCapacityError,
+  restoreRecycleBinEntries,
   safeDeleteBookmarks,
+  safeDeleteFolderTree,
 } from '../core/recycleBin';
 import { highlightSegments, searchBookmarks } from '../core/search';
 import {
   consumePendingLocateFolder,
+  loadActiveDockId,
+  loadAiSites,
+  loadDockCollapsed,
+  loadDockPosition,
   loadExpandedFolders,
+  loadLastAiId,
   loadPinnedIds,
-  loadRecycleBin,
   loadSidebarFontSize,
   loadSidebarTheme,
   loadVisitStats,
+  resolveEffectiveDockPosition,
+  saveActiveDockId,
+  saveAiSites,
+  saveDockCollapsed,
+  saveDockPosition,
   saveExpandedFolders,
+  saveLastAiId,
   savePendingLocateFolder,
   savePinnedIds,
-  saveRecycleBin,
   saveSidebarFontSize,
   saveSidebarTheme,
   saveVisitStats,
+  type DockPosition,
   type SidebarTheme,
 } from '../core/storage';
 import {
   getFrequentBookmarks,
   getRecentBookmarks,
+  prunePinnedIds,
   pruneVisitStats,
   recordBookmarkVisit,
 } from '../core/views';
+import { AiManagerModal } from '../components/AiManagerModal';
+import { AiWorkspace } from '../components/AiWorkspace';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DockRail } from '../components/DockRail';
+import { SidebarSettingsModal } from '../components/SidebarSettingsModal';
 
 type SidebarView = 'tree' | 'recent' | 'frequent';
 
@@ -124,6 +153,11 @@ type ModalState =
       mode: 'rename_folder';
       id: string;
       title: string;
+    }
+  | {
+      mode: 'add_ai_site';
+      title: string;
+      url: string;
     };
 
 type ContextMenuState =
@@ -140,6 +174,12 @@ type ContextMenuState =
       y: number;
       node: chrome.bookmarks.BookmarkTreeNode;
       isProtectedRoot: boolean;
+    }
+  | {
+      kind: 'ai_site';
+      x: number;
+      y: number;
+      site: AiSite;
     };
 
 function HighlightText({ text, query }: { text: string; query: string }) {
@@ -224,7 +264,7 @@ export default function SidePanelApp() {
       ? window.matchMedia('(prefers-color-scheme: dark)').matches
       : false,
   );
-  const [fontPanelOpen, setFontPanelOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [pendingLocateId, setPendingLocateId] = useState<string | null>(null);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(
     null,
@@ -257,6 +297,45 @@ export default function SidePanelApp() {
     message: string;
     undoEntry?: RecycleBinEntry;
   } | null>(null);
+
+  // AI Hub Dock state
+  const [aiSites, setAiSites] = useState<AiSite[]>(() => DEFAULT_AI_SITES);
+  const aiSitesRef = useRef<AiSite[]>(aiSites);
+  aiSitesRef.current = aiSites;
+  const [activeDockId, setActiveDockId] = useState<DockTarget>('bookmarks');
+  const activeDockIdRef = useRef<DockTarget>(activeDockId);
+  activeDockIdRef.current = activeDockId;
+  const [dockCollapsed, setDockCollapsed] = useState(true);
+  const dockCollapsedRef = useRef<boolean>(dockCollapsed);
+  dockCollapsedRef.current = dockCollapsed;
+  const [dockHydrated, setDockHydrated] = useState(false);
+  const [dockPosition, setDockPosition] = useState<DockPosition>('auto');
+  const [browserSidePanelSide, setBrowserSidePanelSide] = useState<
+    'left' | 'right' | null
+  >(null);
+  const isEdge = useMemo(
+    () =>
+      typeof navigator !== 'undefined' && navigator.userAgent.includes('Edg/'),
+    [],
+  );
+  const effectiveDockPosition = resolveEffectiveDockPosition(
+    dockPosition,
+    browserSidePanelSide,
+  );
+  const [loadedAiIds, setLoadedAiIds] = useState<string[]>([]);
+  const [reloadKeys, setReloadKeys] = useState<Record<string, number>>({});
+  const [aiManagerOpen, setAiManagerOpen] = useState(false);
+  const aiManagerOpenRef = useRef<boolean>(aiManagerOpen);
+  aiManagerOpenRef.current = aiManagerOpen;
+  const dockOverriddenRef = useRef(false);
+  const lastAiIdRef = useRef<string | null>(null);
+  const mountedAtRef = useRef<number>(Date.now());
+  const currentWindowIdRef = useRef<number | undefined>(undefined);
+  const aiConfigLoadedRef = useRef(false);
+  const pendingCommandRef = useRef<'FOCUS_SEARCH' | 'OPEN_AI' | null>(null);
+  const messageHandlerRef = useRef<
+    (message: { type?: string; folderId?: string; targetWindowId?: number }) => void
+  >(() => {});
 
   const showToast = useCallback(
     (message: string, undoEntry?: RecycleBinEntry) => {
@@ -301,6 +380,15 @@ export default function SidePanelApp() {
   const refreshTree = useCallback(async () => {
     const tree = await loadBookmarkTree();
     setRoots(tree);
+    const liveIds = new Set(flattenBookmarkTree(tree).map((b) => b.id));
+    setPinnedIds((prev) => {
+      const cleaned = prunePinnedIds(prev, liveIds);
+      if (cleaned.length !== prev.length) {
+        void savePinnedIds(cleaned);
+        return cleaned;
+      }
+      return prev;
+    });
   }, []);
 
   const locateNode = useCallback(
@@ -333,38 +421,171 @@ export default function SidePanelApp() {
 
   useEffect(() => {
     (async () => {
-      const [
-        tree,
-        pinned,
-        expanded,
-        savedFontSize,
-        savedTheme,
-        pendingLocate,
-        savedVisitStats,
-      ] = await Promise.all([
+      let currentWinId: number | undefined = currentWindowIdRef.current;
+      if (
+        currentWinId === undefined &&
+        typeof chrome !== 'undefined' &&
+        chrome.windows?.getCurrent
+      ) {
+        try {
+          const win = await chrome.windows.getCurrent();
+          if (typeof win.id === 'number') {
+            currentWinId = win.id;
+            currentWindowIdRef.current = win.id;
+          }
+        } catch {
+          // Ignore outside extension context
+        }
+      }
+
+      // Start bookmark tree loading in parallel so it never delays initial AI/Dock view switch
+      const bookmarkDataPromise = Promise.all([
         loadBookmarkTree(),
         loadPinnedIds(),
         loadExpandedFolders(),
-        loadSidebarFontSize(),
-        loadSidebarTheme(),
-        consumePendingLocateFolder(),
         loadVisitStats(),
       ]);
+
+      const sidePanelLayoutPromise = (async (): Promise<'left' | 'right' | null> => {
+        try {
+          const sidePanelApi =
+            typeof chrome !== 'undefined'
+              ? (chrome.sidePanel as
+                  | { getLayout?: () => Promise<{ side?: 'left' | 'right' }> }
+                  | undefined)
+              : undefined;
+          if (sidePanelApi?.getLayout) {
+            const layout = await sidePanelApi.getLayout();
+            if (layout?.side === 'left' || layout?.side === 'right') {
+              return layout.side;
+            }
+          }
+        } catch {
+          // Ignore when getLayout is unsupported
+        }
+        return null;
+      })();
+
+      let pendingLocate: string | null = null;
+      try {
+        const [
+          savedFontSize,
+          savedTheme,
+          loadedPendingLocate,
+          savedAiSites,
+          savedDockCollapsed,
+          savedDockPosition,
+          savedActiveDockId,
+          savedLastAiId,
+          detectedSide,
+        ] = await Promise.all([
+          loadSidebarFontSize(),
+          loadSidebarTheme(),
+          consumePendingLocateFolder(15_000, currentWinId),
+          loadAiSites(),
+          loadDockCollapsed(),
+          loadDockPosition(),
+          loadActiveDockId(),
+          loadLastAiId(),
+          sidePanelLayoutPromise,
+        ]);
+
+        pendingLocate = loadedPendingLocate;
+        if (detectedSide) {
+          setBrowserSidePanelSide(detectedSide);
+        }
+        setDockPosition(savedDockPosition);
+        setFontSize(savedFontSize);
+        setThemeMode(savedTheme);
+        setAiSites(savedAiSites);
+        aiSitesRef.current = savedAiSites;
+        aiConfigLoadedRef.current = true;
+        if (!lastAiIdRef.current && savedLastAiId) {
+          lastAiIdRef.current = savedLastAiId;
+        }
+
+        const resolvedDock: DockTarget = pendingLocate
+          ? 'bookmarks'
+          : resolveActiveDockTarget(savedActiveDockId, savedAiSites);
+
+        const deferredCmd = pendingCommandRef.current;
+        pendingCommandRef.current = null;
+
+        if (deferredCmd === 'OPEN_AI') {
+          const targetAiId = resolvePreferredAiSiteId(
+            lastAiIdRef.current,
+            savedAiSites,
+          );
+          setDockCollapsed(false);
+          void saveDockCollapsed(false);
+          if (targetAiId) {
+            setAiManagerOpen(false);
+            lastAiIdRef.current = targetAiId;
+            setActiveDockId(targetAiId);
+            setLoadedAiIds((prev) =>
+              prev.includes(targetAiId) ? prev : [...prev, targetAiId],
+            );
+            void saveActiveDockId(targetAiId);
+            void saveLastAiId(targetAiId);
+          } else {
+            setActiveDockId('bookmarks');
+            void saveActiveDockId('bookmarks');
+            setAiManagerOpen(true);
+          }
+        } else if (deferredCmd === 'FOCUS_SEARCH') {
+          setAiManagerOpen(false);
+          setDockCollapsed(true);
+          setActiveDockId('bookmarks');
+          void saveDockCollapsed(true);
+          void saveActiveDockId('bookmarks');
+          requestAnimationFrame(() => focusSearch());
+        } else if (!dockOverriddenRef.current) {
+          setDockCollapsed(savedDockCollapsed);
+          setActiveDockId(resolvedDock);
+          if (resolvedDock !== 'bookmarks') {
+            lastAiIdRef.current = resolvedDock;
+            setLoadedAiIds((prev) =>
+              prev.includes(resolvedDock) ? prev : [...prev, resolvedDock],
+            );
+          }
+          if (resolvedDock !== savedActiveDockId) {
+            void saveActiveDockId(resolvedDock);
+          }
+          if (!pendingLocate && resolvedDock === 'bookmarks') {
+            requestAnimationFrame(() => focusSearch());
+          }
+        } else {
+          // Revalidate activeDockId against loaded AI config so we never leave a blank view
+          setActiveDockId((prev) => {
+            const valid = resolveActiveDockTarget(prev, savedAiSites);
+            if (valid !== prev) void saveActiveDockId(valid);
+            return valid;
+          });
+          if (!pendingLocate && activeDockIdRef.current === 'bookmarks') {
+            requestAnimationFrame(() => focusSearch());
+          }
+        }
+      } finally {
+        setDockHydrated(true);
+      }
+
+      const [tree, pinned, expanded, savedVisitStats] = await bookmarkDataPromise;
       const liveIds = new Set(flattenBookmarkTree(tree).map((b) => b.id));
       const cleanedStats = pruneVisitStats(savedVisitStats, liveIds);
       if (Object.keys(cleanedStats).length !== Object.keys(savedVisitStats).length) {
         void saveVisitStats(cleanedStats);
       }
+      const cleanedPinned = prunePinnedIds(pinned, liveIds);
+      if (cleanedPinned.length !== pinned.length) {
+        void savePinnedIds(cleanedPinned);
+      }
       setRoots(tree);
-      setPinnedIds(pinned);
+      setPinnedIds(cleanedPinned);
       setExpandedIds(new Set(expanded));
-      setFontSize(savedFontSize);
-      setThemeMode(savedTheme);
       setVisitStats(cleanedStats);
+
       if (pendingLocate) {
         locateNode(pendingLocate, tree);
-      } else {
-        focusSearch();
       }
     })();
   }, [focusSearch, locateNode]);
@@ -381,17 +602,70 @@ export default function SidePanelApp() {
     return () => cancelAnimationFrame(raf);
   }, [pendingLocateId, expandedIds, query, roots, activeView]);
 
+  // Register open side-panel presence with service worker for shortcut toggle-close
+  useEffect(() => {
+    if (typeof chrome === 'undefined' || !chrome.runtime?.connect) return;
+    let port: chrome.runtime.Port | null = null;
+    try {
+      port = chrome.runtime.connect({ name: 'sidepanel' });
+      port.onMessage.addListener(
+        (msg: { type?: string; folderId?: string; targetWindowId?: number }) => {
+          messageHandlerRef.current(msg);
+        },
+      );
+      port.onDisconnect.addListener(() => {
+        // Consume runtime.lastError so Chrome/Edge never logs
+        // "Unchecked runtime.lastError" when the service worker sleeps or reloads.
+        void chrome.runtime.lastError;
+        port = null;
+      });
+      if (chrome.windows?.getCurrent) {
+        void chrome.windows
+          .getCurrent()
+          .then((win) => {
+            if (typeof win.id === 'number') {
+              currentWindowIdRef.current = win.id;
+              if (port) {
+                try {
+                  port.postMessage({ type: 'PANEL_READY', windowId: win.id });
+                } catch {
+                  // Ignore if port already disconnected
+                }
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {
+      // Ignore outside extension context
+    }
+    return () => {
+      try {
+        port?.disconnect();
+      } catch {
+        // Ignore disconnect error
+      }
+    };
+  }, []);
+
   // Auto-focus search on window focus, visibility change, and shortcut message
   useEffect(() => {
-    const onFocus = () => focusSearch();
+    const isBookmarksActive =
+      activeDockId === 'bookmarks' && !aiManagerOpen && !settingsOpen;
+    const onFocus = () => {
+      if (isBookmarksActive) focusSearch();
+    };
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') focusSearch();
+      if (document.visibilityState === 'visible' && isBookmarksActive) {
+        focusSearch();
+      }
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && contextMenu) {
         setContextMenu(null);
         return;
       }
+      if (!isBookmarksActive) return;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         focusSearch();
@@ -405,17 +679,93 @@ export default function SidePanelApp() {
         focusSearch();
       }
     };
-    const onMessage = (message: { type?: string; folderId?: string }) => {
+    const onMessage = (message: {
+      type?: string;
+      folderId?: string;
+      targetWindowId?: number;
+    }) => {
+      // Ignore messages targeted at a different browser window
+      if (
+        typeof message?.targetWindowId === 'number' &&
+        typeof currentWindowIdRef.current === 'number' &&
+        message.targetWindowId !== currentWindowIdRef.current
+      ) {
+        return;
+      }
+
+      const canToggleClose = Date.now() - mountedAtRef.current >= 600;
+
       if (message?.type === 'FOCUS_SEARCH') {
-        focusSearch();
+        if (
+          canToggleClose &&
+          activeDockIdRef.current === 'bookmarks' &&
+          dockCollapsedRef.current &&
+          !aiManagerOpenRef.current
+        ) {
+          window.close();
+          return;
+        }
+        if (!aiConfigLoadedRef.current) {
+          pendingCommandRef.current = 'FOCUS_SEARCH';
+        }
+        dockOverriddenRef.current = true;
+        setAiManagerOpen(false);
+        setDockCollapsed(true);
+        setActiveDockId('bookmarks');
+        void saveDockCollapsed(true);
+        void saveActiveDockId('bookmarks');
+        requestAnimationFrame(() => focusSearch());
+      } else if (message?.type === 'OPEN_AI') {
+        if (
+          canToggleClose &&
+          !dockCollapsedRef.current &&
+          (activeDockIdRef.current !== 'bookmarks' || aiManagerOpenRef.current)
+        ) {
+          window.close();
+          return;
+        }
+        if (!aiConfigLoadedRef.current) {
+          // Wait for saved AI sites to load before selecting target AI
+          pendingCommandRef.current = 'OPEN_AI';
+          dockOverriddenRef.current = true;
+          setDockCollapsed(false);
+          return;
+        }
+        dockOverriddenRef.current = true;
+        setContextMenu(null);
+        setDockCollapsed(false);
+        void saveDockCollapsed(false);
+        const targetAiId = resolvePreferredAiSiteId(
+          lastAiIdRef.current,
+          aiSitesRef.current,
+        );
+        if (targetAiId) {
+          setAiManagerOpen(false);
+          lastAiIdRef.current = targetAiId;
+          setActiveDockId(targetAiId);
+          setLoadedAiIds((prev) =>
+            prev.includes(targetAiId) ? prev : [...prev, targetAiId],
+          );
+          void saveActiveDockId(targetAiId);
+          void saveLastAiId(targetAiId);
+        } else {
+          setActiveDockId('bookmarks');
+          void saveActiveDockId('bookmarks');
+          setAiManagerOpen(true);
+        }
       } else if (
         message?.type === 'LOCATE_FOLDER' &&
         typeof message.folderId === 'string'
       ) {
+        dockOverriddenRef.current = true;
+        setAiManagerOpen(false);
+        setActiveDockId('bookmarks');
+        void saveActiveDockId('bookmarks');
         void savePendingLocateFolder(null);
         locateNode(message.folderId);
       }
     };
+    messageHandlerRef.current = onMessage;
     const onPointerDown = (e: MouseEvent) => {
       // Ignore right-click here; capture-phase contextmenu handler closes it cleanly
       if (e.button === 2) return;
@@ -446,23 +796,29 @@ export default function SidePanelApp() {
       window.removeEventListener('contextmenu', onWindowContextMenu, true);
       chrome.runtime?.onMessage?.removeListener(onMessage);
     };
-  }, [focusSearch, locateNode, modal, contextMenu]);
+  }, [focusSearch, locateNode, modal, contextMenu, activeDockId, aiManagerOpen, settingsOpen]);
 
-  // Live sync with browser bookmark events
+  // Live sync with browser bookmark events (80ms debounce to coalesce batch operations)
   useEffect(() => {
     if (typeof chrome === 'undefined' || !chrome.bookmarks) return;
-    const handler = () => {
-      void refreshTree();
+    let timer: number | null = null;
+    const scheduleRefresh = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refreshTree();
+      }, 80);
     };
-    chrome.bookmarks.onCreated?.addListener(handler);
-    chrome.bookmarks.onRemoved?.addListener(handler);
-    chrome.bookmarks.onChanged?.addListener(handler);
-    chrome.bookmarks.onMoved?.addListener(handler);
+    chrome.bookmarks.onCreated?.addListener(scheduleRefresh);
+    chrome.bookmarks.onRemoved?.addListener(scheduleRefresh);
+    chrome.bookmarks.onChanged?.addListener(scheduleRefresh);
+    chrome.bookmarks.onMoved?.addListener(scheduleRefresh);
     return () => {
-      chrome.bookmarks.onCreated?.removeListener(handler);
-      chrome.bookmarks.onRemoved?.removeListener(handler);
-      chrome.bookmarks.onChanged?.removeListener(handler);
-      chrome.bookmarks.onMoved?.removeListener(handler);
+      if (timer !== null) window.clearTimeout(timer);
+      chrome.bookmarks.onCreated?.removeListener(scheduleRefresh);
+      chrome.bookmarks.onRemoved?.removeListener(scheduleRefresh);
+      chrome.bookmarks.onChanged?.removeListener(scheduleRefresh);
+      chrome.bookmarks.onMoved?.removeListener(scheduleRefresh);
     };
   }, [refreshTree]);
 
@@ -515,9 +871,7 @@ export default function SidePanelApp() {
     await saveSidebarFontSize(clamped);
   };
 
-  const cycleTheme = async () => {
-    const order: SidebarTheme[] = ['system', 'light', 'dark'];
-    const next = order[(order.indexOf(themeMode) + 1) % order.length];
+  const handleSelectTheme = async (next: SidebarTheme) => {
     setThemeMode(next);
     await saveSidebarTheme(next);
     const label =
@@ -527,6 +881,18 @@ export default function SidePanelApp() {
           ? '浅色模式'
           : '跟随系统';
     showToast(`外观已切换为：${label}`);
+  };
+
+  const handleSelectDockPosition = async (next: DockPosition) => {
+    setDockPosition(next);
+    await saveDockPosition(next);
+    const label =
+      next === 'left'
+        ? '左侧'
+        : next === 'right'
+          ? '右侧'
+          : '自动（贴外侧边缘）';
+    showToast(`AI 切换栏已设为：${label}`);
   };
 
   const handleMiddleMouseDown = (e: React.MouseEvent) => {
@@ -670,11 +1036,14 @@ export default function SidePanelApp() {
   };
 
   const handleOpenShortcutsPage = async () => {
-    const isEdge = navigator.userAgent.includes('Edg/');
     const url = isEdge
       ? 'edge://extensions/shortcuts'
       : 'chrome://extensions/shortcuts';
     await chrome.tabs.create({ url });
+  };
+
+  const handleOpenAppearanceSettings = async () => {
+    await chrome.tabs.create({ url: 'chrome://settings/appearance' });
   };
 
   const handleBookmarkCurrentTab = async (parentId = '1') => {
@@ -750,20 +1119,36 @@ export default function SidePanelApp() {
 
   const handleUndoDelete = async (entry: RecycleBinEntry) => {
     try {
-      await restoreRecycleBinEntry(entry);
-      const bin = await loadRecycleBin();
-      await saveRecycleBin(bin.filter((e) => e.id !== entry.id));
-      await refreshTree();
-      showToast('已撤销删除');
+      const res = await restoreRecycleBinEntries([entry.id]);
+      if (res.restoredIds.length > 0) {
+        await refreshTree();
+        showToast('已撤销删除');
+      } else {
+        showToast('撤销失败，可在回收站手动还原');
+      }
     } catch {
       showToast('撤销失败，可在回收站手动还原');
     }
   };
 
   const handleDeleteBookmark = async (bookmark: BookmarkItem) => {
-    const updatedBin = await safeDeleteBookmarks([bookmark], '侧边栏删除');
-    await refreshTree();
-    showToast('已移入本地回收站', updatedBin[0]);
+    try {
+      const result = await safeDeleteBookmarks([bookmark], '侧边栏删除');
+      await refreshTree();
+      if (result.failedIds.length > 0) {
+        showToast('删除失败（该书签可能受浏览器策略保护）');
+      } else if (result.deletedIds.length > 0) {
+        showToast('已移入本地回收站', result.createdEntries[0]);
+      } else {
+        showToast('该书签已不存在');
+      }
+    } catch (err) {
+      showToast(
+        err instanceof RecycleBinCapacityError
+          ? err.message
+          : '删除失败，请稍后重试',
+      );
+    }
   };
 
   const handleDeleteFolderTree = (node: chrome.bookmarks.BookmarkTreeNode) => {
@@ -773,23 +1158,28 @@ export default function SidePanelApp() {
       title: `确定删除文件夹「${node.title || '未命名文件夹'}」？`,
       description:
         childBookmarks.length > 0
-          ? `该文件夹内包含 ${childBookmarks.length} 条书签。\n删除前会自动将所有书签备份到本地「回收站」，可随时一键还原。`
+          ? `该文件夹内包含 ${childBookmarks.length} 条书签。\n删除前会重新读取最新内容并全部备份到本地「回收站」，可随时一键还原。`
           : '该文件夹为空，将直接删除。',
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
-        if (childBookmarks.length > 0) {
-          await safeDeleteBookmarks(
-            childBookmarks,
+        try {
+          const outcome = await safeDeleteFolderTree(
+            node.id,
             `侧边栏删除文件夹：${node.title}`,
           );
+          await refreshTree();
+          showToast(
+            outcome.remainingNonEmpty
+              ? '已备份删除原有书签；检测到新增书签，已保留非空目录'
+              : '文件夹已删除',
+          );
+        } catch (err) {
+          showToast(
+            err instanceof RecycleBinCapacityError
+              ? err.message
+              : '删除文件夹失败，请稍后重试',
+          );
         }
-        try {
-          await chrome.bookmarks.removeTree(node.id);
-        } catch {
-          // Folder may already have been removed
-        }
-        await refreshTree();
-        showToast('文件夹已删除');
       },
     });
   };
@@ -969,6 +1359,21 @@ export default function SidePanelApp() {
       if (!modal.title.trim()) return;
       await updateBookmark(modal.id, { title: modal.title.trim() });
       showToast('文件夹已重命名');
+    } else if (modal.mode === 'add_ai_site') {
+      const res = addCustomAiSite(aiSites, {
+        name: modal.title,
+        url: modal.url,
+      });
+      if ('error' in res) {
+        showToast(res.error);
+        return;
+      }
+      applyAiSitesUpdate(res.sites);
+      handleSetDockCollapsed(false);
+      handleSelectDockTarget(res.created.id);
+      setModal(null);
+      showToast(`已将「${res.created.name}」添加到 AI 侧栏`);
+      return;
     }
 
     setModal(null);
@@ -1295,11 +1700,225 @@ export default function SidePanelApp() {
     });
   };
 
+  const applyAiSitesUpdate = (nextSites: AiSite[]) => {
+    setAiSites(nextSites);
+    void saveAiSites(nextSites);
+    setLoadedAiIds((prev) => pruneLoadedAiIds(prev, nextSites));
+    setActiveDockId((prev) => {
+      const resolved = resolveActiveDockTarget(prev, nextSites);
+      if (resolved !== prev) {
+        void saveActiveDockId(resolved);
+      }
+      return resolved;
+    });
+  };
+
+  const handleSelectDockTarget = (target: DockTarget) => {
+    dockOverriddenRef.current = true;
+    setContextMenu(null);
+    setActiveDockId(target);
+    void saveActiveDockId(target);
+    if (target !== 'bookmarks') {
+      lastAiIdRef.current = target;
+      void saveLastAiId(target);
+      setLoadedAiIds((prev) => (prev.includes(target) ? prev : [...prev, target]));
+    }
+  };
+
+  const handleSetDockCollapsed = (collapsed: boolean) => {
+    setDockCollapsed(collapsed);
+    void saveDockCollapsed(collapsed);
+  };
+
+  const handleRefreshAiSite = (siteId: string) => {
+    setReloadKeys((prev) => ({ ...prev, [siteId]: (prev[siteId] ?? 0) + 1 }));
+  };
+
+  const handleUnloadAiSite = (siteId: string) => {
+    setLoadedAiIds((prev) => prev.filter((id) => id !== siteId));
+    setReloadKeys((prev) => ({ ...prev, [siteId]: (prev[siteId] ?? 0) + 1 }));
+    if (activeDockId === siteId) {
+      dockOverriddenRef.current = true;
+      setActiveDockId('bookmarks');
+      void saveActiveDockId('bookmarks');
+    }
+    showToast('已休眠并释放该 AI 页面内存');
+  };
+
+  const handleOpenAiInNewTab = (url: string) => {
+    if (typeof chrome !== 'undefined' && chrome.tabs?.create) {
+      void chrome.tabs.create({ url });
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  const handleToggleAiSite = (id: string) => {
+    applyAiSitesUpdate(toggleAiSite(aiSites, id));
+  };
+
+  const handleAddAiSite = (input: { name: string; url: string }): string | null => {
+    const res = addCustomAiSite(aiSites, input);
+    if ('error' in res) return res.error;
+    applyAiSitesUpdate(res.sites);
+    showToast(`已添加「${res.created.name}」`);
+    return null;
+  };
+
+  const handleUpdateAiSite = (
+    id: string,
+    patch: { name: string; url: string },
+  ): string | null => {
+    const res = updateAiSite(aiSites, id, patch);
+    if ('error' in res) return res.error;
+    applyAiSitesUpdate(res.sites);
+    showToast('已更新 AI 站点');
+    return null;
+  };
+
+  const handleDeleteAiSite = (id: string) => {
+    applyAiSitesUpdate(deleteAiSite(aiSites, id));
+    showToast('已删除 AI 站点');
+  };
+
+  const handleReorderAiSites = (fromIndex: number, toIndex: number) => {
+    applyAiSitesUpdate(reorderAiSites(aiSites, fromIndex, toIndex));
+  };
+
+  const handleResetBuiltInAiSites = () => {
+    applyAiSitesUpdate(resetBuiltInAiSites(aiSites));
+    showToast('已恢复默认 AI 预设');
+  };
+
+  const handleAddCurrentTabToAi = async () => {
+    let tabTitle = '';
+    let tabUrl = '';
+    if (typeof chrome !== 'undefined' && chrome.tabs?.query) {
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      tabTitle = activeTab?.title?.trim() ?? '';
+      tabUrl = activeTab?.url?.trim() ?? '';
+    }
+
+    const normalized = normalizeAiUrl(tabUrl);
+    if (!normalized) {
+      showToast('当前页面不支持添加到 AI 侧栏');
+      return;
+    }
+
+    const existing = aiSites.find((s) => normalizeAiUrl(s.url) === normalized);
+    if (existing) {
+      if (!existing.enabled) {
+        const nextSites = toggleAiSite(aiSites, existing.id, true);
+        applyAiSitesUpdate(nextSites);
+        handleSelectDockTarget(existing.id);
+        showToast(`已重新启用「${existing.name}」`);
+      } else {
+        handleSelectDockTarget(existing.id);
+        showToast(`「${existing.name}」已在 AI 侧栏中`);
+      }
+      return;
+    }
+
+    setModal({
+      mode: 'add_ai_site',
+      title: tabTitle || new URL(normalized).hostname,
+      url: normalized,
+    });
+  };
+
+  const handleOpenAiSiteContextMenu = (e: React.MouseEvent, site: AiSite) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const menuWidth = 196;
+    const menuHeight = 180;
+    const x = Math.min(e.clientX, Math.max(8, window.innerWidth - menuWidth - 8));
+    const y = Math.min(e.clientY, Math.max(8, window.innerHeight - menuHeight - 8));
+    setContextMenu({ kind: 'ai_site', x, y, site });
+  };
+
+  const activeAiSite =
+    activeDockId === 'bookmarks'
+      ? null
+      : (aiSites.find((s) => s.id === activeDockId && s.enabled) ?? null);
+
+  const mountedAiSites = useMemo(() => {
+    const loadedSet = new Set(loadedAiIds);
+    return aiSites.filter((s) => s.enabled && loadedSet.has(s.id));
+  }, [aiSites, loadedAiIds]);
+
+  if (!dockHydrated) {
+    return (
+      <div className="flex h-screen bg-white dark:bg-slate-950 select-none overflow-hidden" />
+    );
+  }
+
   return (
-    <div className="flex h-screen flex-col bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 select-none">
+    <div
+      className={`flex h-screen ${
+        effectiveDockPosition === 'right' ? 'flex-row-reverse' : 'flex-row'
+      } bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 select-none overflow-hidden`}
+    >
+      {!dockCollapsed && (
+        <DockRail
+          sites={aiSites}
+          activeTarget={activeDockId}
+          loadedAiIds={loadedAiIds}
+          position={effectiveDockPosition}
+          onSelectTarget={handleSelectDockTarget}
+          onSiteContextMenu={handleOpenAiSiteContextMenu}
+          onAddCurrentTab={() => void handleAddCurrentTabToAi()}
+          onOpenManager={() => setAiManagerOpen(true)}
+          onCollapse={() => handleSetDockCollapsed(true)}
+        />
+      )}
+
+      <div className="flex flex-1 min-w-0 flex-col h-full overflow-hidden">
+        {(mountedAiSites.length > 0 || activeAiSite !== null) && (
+          <div
+            className={
+              activeAiSite !== null
+                ? 'flex flex-1 min-h-0 flex-col'
+                : 'hidden'
+            }
+          >
+            <AiWorkspace
+              activeSite={activeAiSite}
+              mountedSites={mountedAiSites}
+              reloadKeys={reloadKeys}
+              dockCollapsed={dockCollapsed}
+              dockPosition={effectiveDockPosition}
+              onExpandDock={() => handleSetDockCollapsed(false)}
+              onRefreshSite={handleRefreshAiSite}
+              onUnloadSite={handleUnloadAiSite}
+              onOpenInNewTab={handleOpenAiInNewTab}
+              onOpenManager={() => setAiManagerOpen(true)}
+            />
+          </div>
+        )}
+
+        <div
+          className={
+            activeAiSite === null
+              ? 'flex flex-1 min-h-0 flex-col'
+              : 'hidden'
+          }
+        >
       {/* Compact Top Bar */}
       <header className="flex items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 px-3 py-2.5 bg-slate-50/80 dark:bg-slate-900/90">
         <div className="flex items-center gap-2 min-w-0">
+          {dockCollapsed && effectiveDockPosition === 'left' && (
+            <button
+              type="button"
+              onClick={() => handleSetDockCollapsed(false)}
+              className="rounded-lg p-1 text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+              title="展开左侧 AI 切换栏"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+          )}
           <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-blue-600 to-indigo-600 text-white shadow-xs">
             <Bookmark className="h-3.5 w-3.5" />
           </div>
@@ -1316,38 +1935,6 @@ export default function SidePanelApp() {
         <div className="flex items-center gap-1">
           <button
             type="button"
-            onClick={() => void cycleTheme()}
-            className="rounded-lg p-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-colors cursor-pointer"
-            title={`切换外观（当前：${
-              themeMode === 'dark'
-                ? '深色模式'
-                : themeMode === 'light'
-                  ? '浅色模式'
-                  : '跟随系统'
-            }）`}
-          >
-            {themeMode === 'dark' ? (
-              <Moon className="h-4 w-4" />
-            ) : themeMode === 'light' ? (
-              <Sun className="h-4 w-4" />
-            ) : (
-              <Monitor className="h-4 w-4" />
-            )}
-          </button>
-          <button
-            type="button"
-            onClick={() => setFontPanelOpen((v) => !v)}
-            className={`rounded-lg p-1.5 border transition-colors cursor-pointer ${
-              fontPanelOpen
-                ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800'
-                : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 border-transparent hover:border-slate-200 dark:hover:border-slate-700'
-            }`}
-            title={`调整字体大小（当前 ${fontSize}px）`}
-          >
-            <Type className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
             onClick={() => handleBookmarkCurrentTab('1')}
             className="rounded-lg p-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-colors cursor-pointer"
             title="收藏当前网页"
@@ -1356,11 +1943,15 @@ export default function SidePanelApp() {
           </button>
           <button
             type="button"
-            onClick={handleOpenShortcutsPage}
-            className="rounded-lg p-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 border border-transparent hover:border-slate-200 dark:hover:border-slate-700 transition-colors cursor-pointer"
-            title="自定义全局快捷键 (默认 Alt+B / Alt+K)"
+            onClick={() => setSettingsOpen(true)}
+            className={`rounded-lg p-1.5 border transition-colors cursor-pointer ${
+              settingsOpen
+                ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border-blue-200 dark:border-blue-800'
+                : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 border-transparent hover:border-slate-200 dark:hover:border-slate-700'
+            }`}
+            title="侧边栏设置（外观、字号、AI 栏位置、快捷键）"
           >
-            <Keyboard className="h-4 w-4" />
+            <Settings className="h-4 w-4" />
           </button>
           <button
             type="button"
@@ -1379,69 +1970,18 @@ export default function SidePanelApp() {
             <Radar className="h-3.5 w-3.5" />
             <span>{workbenchOpen ? '收起' : '清理'}</span>
           </button>
+          {dockCollapsed && effectiveDockPosition === 'right' && (
+            <button
+              type="button"
+              onClick={() => handleSetDockCollapsed(false)}
+              className="rounded-lg p-1 text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+              title="展开右侧 AI 切换栏"
+            >
+              <PanelRightOpen className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </header>
-
-      {/* Collapsible Font Size Control Bar */}
-      {fontPanelOpen && (
-        <div className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 px-3 py-2.5 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-              侧边栏字体大小
-            </span>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => updateFontSize(fontSize - 1)}
-                disabled={fontSize <= 11}
-                className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 cursor-pointer"
-                title="缩小字号"
-              >
-                <Minus className="h-3 w-3" />
-              </button>
-              <span className="w-10 text-center text-xs font-semibold text-slate-800 dark:text-slate-200 tabular-nums">
-                {fontSize}px
-              </span>
-              <button
-                type="button"
-                onClick={() => updateFontSize(fontSize + 1)}
-                disabled={fontSize >= 20}
-                className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-1 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 cursor-pointer"
-                title="放大字号"
-              >
-                <Plus className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              min={11}
-              max={20}
-              step={1}
-              value={fontSize}
-              onChange={(e) => updateFontSize(Number(e.target.value))}
-              className="flex-1 accent-blue-600 cursor-pointer"
-            />
-            <div className="flex items-center gap-1">
-              {[12, 14, 16, 18].map((preset) => (
-                <button
-                  key={preset}
-                  type="button"
-                  onClick={() => updateFontSize(preset)}
-                  className={`rounded px-1.5 py-0.5 text-[11px] font-medium cursor-pointer transition-colors ${
-                    fontSize === preset
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
-                  }`}
-                >
-                  {preset}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Keyboard-first Search Bar */}
       <div className="border-b border-slate-100 dark:border-slate-800 p-3 bg-white dark:bg-slate-950">
@@ -2017,15 +2557,75 @@ export default function SidePanelApp() {
           </>
         )}
       </div>
+        </div>
+      </div>
 
-      {/* Custom Right-Click Context Menu */}
+      {/* Custom Right-Click Context Menu (root-level so it works in both Bookmarks & AI views) */}
       {contextMenu && (
         <div
           ref={menuRef}
           style={{ left: contextMenu.x, top: contextMenu.y }}
           className="fixed z-50 w-52 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 py-1.5 shadow-xl text-xs text-slate-700 dark:text-slate-200"
         >
-          {contextMenu.kind === 'bookmark' ? (
+          {contextMenu.kind === 'ai_site' ? (
+            <>
+              <div className="px-3 py-1 text-[11px] font-semibold text-slate-400 dark:text-slate-500 truncate">
+                {contextMenu.site.name}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const id = contextMenu.site.id;
+                  setContextMenu(null);
+                  handleSelectDockTarget(id);
+                  handleRefreshAiSite(id);
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <RotateCw className="h-3.5 w-3.5 text-slate-400" />
+                <span>刷新页面</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const url = contextMenu.site.url;
+                  setContextMenu(null);
+                  handleOpenAiInNewTab(url);
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                <ExternalLink className="h-3.5 w-3.5 text-slate-400" />
+                <span>在新标签页打开</span>
+              </button>
+              {loadedAiIds.includes(contextMenu.site.id) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = contextMenu.site.id;
+                    setContextMenu(null);
+                    handleUnloadAiSite(id);
+                  }}
+                  className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                >
+                  <Power className="h-3.5 w-3.5 text-amber-500" />
+                  <span>休眠释放内存</span>
+                </button>
+              )}
+              <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+              <button
+                type="button"
+                onClick={() => {
+                  const id = contextMenu.site.id;
+                  setContextMenu(null);
+                  handleDeleteAiSite(id);
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>删除此 AI</span>
+              </button>
+            </>
+          ) : contextMenu.kind === 'bookmark' ? (
             <>
               <button
                 type="button"
@@ -2270,7 +2870,7 @@ export default function SidePanelApp() {
         </div>
       )}
 
-      {/* Lightweight Add/Edit Modal */}
+      {/* Lightweight Add/Edit Modal (root-level so it works in both Bookmarks & AI views) */}
       {modal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-3">
           <form
@@ -2285,7 +2885,9 @@ export default function SidePanelApp() {
                     ? '编辑书签'
                     : modal.mode === 'add_folder'
                       ? '新建文件夹'
-                      : '重命名文件夹'}
+                      : modal.mode === 'add_ai_site'
+                        ? '添加到 AI 侧栏'
+                        : '重命名文件夹'}
               </h3>
               <button
                 type="button"
@@ -2310,7 +2912,8 @@ export default function SidePanelApp() {
             </div>
 
             {(modal.mode === 'add_bookmark' ||
-              modal.mode === 'edit_bookmark') && (
+              modal.mode === 'edit_bookmark' ||
+              modal.mode === 'add_ai_site') && (
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
                   链接地址
@@ -2372,6 +2975,8 @@ export default function SidePanelApp() {
                         type="button"
                         onClick={() => {
                           setModal(null);
+                          setActiveDockId('bookmarks');
+                          void saveActiveDockId('bookmarks');
                           locateNode(match.id);
                         }}
                         className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:text-amber-200 hover:bg-amber-200 dark:hover:bg-amber-800/80 cursor-pointer transition-colors"
@@ -2406,6 +3011,33 @@ export default function SidePanelApp() {
           </form>
         </div>
       )}
+
+      <SidebarSettingsModal
+        open={settingsOpen}
+        themeMode={themeMode}
+        fontSize={fontSize}
+        dockPosition={dockPosition}
+        isEdge={isEdge}
+        onSelectTheme={(theme) => void handleSelectTheme(theme)}
+        onChangeFontSize={updateFontSize}
+        onSelectDockPosition={(pos) => void handleSelectDockPosition(pos)}
+        onOpenAppearanceSettings={() => void handleOpenAppearanceSettings()}
+        onOpenShortcuts={handleOpenShortcutsPage}
+        onClose={() => setSettingsOpen(false)}
+      />
+
+      <AiManagerModal
+        open={aiManagerOpen}
+        sites={aiSites}
+        loadedAiIds={loadedAiIds}
+        onClose={() => setAiManagerOpen(false)}
+        onToggle={handleToggleAiSite}
+        onAdd={handleAddAiSite}
+        onUpdate={handleUpdateAiSite}
+        onDelete={handleDeleteAiSite}
+        onReorder={handleReorderAiSites}
+        onResetBuiltIn={handleResetBuiltInAiSites}
+      />
 
       <ConfirmDialog
         open={confirmState.open}

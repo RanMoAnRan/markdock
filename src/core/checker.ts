@@ -290,7 +290,9 @@ function shouldFallbackToGet(response: Response): boolean {
   if (
     status === 400 ||
     status === 403 ||
+    status === 404 ||
     status === 405 ||
+    status === 410 ||
     status === 501 ||
     status === 503
   ) {

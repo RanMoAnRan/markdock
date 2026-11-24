@@ -1,39 +1,65 @@
+import { setupAiFrameRules } from './aiFrameRules';
+import {
+  handleExtensionCommand,
+  registerSidePanelPort,
+} from './commandHandler';
+import {
+  handleRecycleBinMessage,
+  isRecycleBinMessage,
+} from './recycleBinHandler';
+
+let panelBehaviorConfigured = false;
+
 const configureSidePanel = async () => {
   if (chrome.sidePanel?.setPanelBehavior) {
     try {
       await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+      panelBehaviorConfigured = true;
     } catch {
-      // Fallback handled by action.onClicked below if needed
+      panelBehaviorConfigured = false;
     }
   }
 };
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.action?.onClicked?.addListener((tab) => {
+  if (!panelBehaviorConfigured && tab?.windowId !== undefined && chrome.sidePanel?.open) {
+    void chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+  }
+});
+
+const initializeExtension = () => {
   void configureSidePanel();
+  void setupAiFrameRules();
+};
+
+chrome.runtime.onInstalled.addListener(() => {
+  initializeExtension();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void configureSidePanel();
+  initializeExtension();
 });
 
-void configureSidePanel();
+initializeExtension();
 
-chrome.commands.onCommand.addListener(async (command) => {
-  if (command !== 'focus-search') return;
+chrome.runtime.onConnect.addListener((port) => {
+  registerSidePanelPort(port);
+});
 
-  try {
-    const win = await chrome.windows.getLastFocused();
-    if (win.id !== undefined && chrome.sidePanel?.open) {
-      await chrome.sidePanel.open({ windowId: win.id });
-    }
-  } catch {
-    // Ignore if sidePanel.open cannot be invoked in current window
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!isRecycleBinMessage(message)) {
+    return undefined;
   }
+  void handleRecycleBinMessage(message).then(sendResponse);
+  return true;
+});
 
-  // Notify an already-open side panel to immediately focus & select the search input
-  try {
-    await chrome.runtime.sendMessage({ type: 'FOCUS_SEARCH' });
-  } catch {
-    // Panel may just be mounting and will auto-focus on mount
+chrome.storage?.onChanged?.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.bcp_ai_sites) {
+    void setupAiFrameRules();
   }
+});
+
+chrome.commands.onCommand.addListener((command, tab) => {
+  void handleExtensionCommand(command, tab);
 });

@@ -35,6 +35,21 @@ export function pruneVisitStats(
   return pruned;
 }
 
+export function prunePinnedIds(
+  pinnedIds: string[],
+  liveBookmarkIds: Set<string>,
+): string[] {
+  const seen = new Set<string>();
+  const pruned: string[] = [];
+  for (const id of pinnedIds) {
+    if (liveBookmarkIds.has(id) && !seen.has(id)) {
+      seen.add(id);
+      pruned.push(id);
+    }
+  }
+  return pruned;
+}
+
 export function getRecentBookmarks(
   bookmarks: BookmarkItem[],
   limit = 50,

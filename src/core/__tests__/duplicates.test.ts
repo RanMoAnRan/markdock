@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  computeSafeRemovableDuplicates,
   findDuplicateGroups,
   findMatchingBookmarksByUrl,
   normalizeUrl,
@@ -76,5 +77,64 @@ describe('duplicates detector', () => {
 
     expect(findMatchingBookmarksByUrl(items, '')).toEqual([]);
     expect(findMatchingBookmarksByUrl(items, 'not-a-url')).toEqual([]);
+  });
+
+  it('preserves SPA hash routes (#/... and #!/...) so distinct app pages are not merged', () => {
+    const items = [
+      makeBookmark('s1', 'https://app.example.com/#/settings', 1000),
+      makeBookmark('s2', 'https://app.example.com/#/profile', 2000),
+      makeBookmark('s3', 'https://app.example.com/#!/dashboard', 3000),
+      makeBookmark('s4', 'https://app.example.com/#!/billing', 4000),
+    ];
+
+    expect(findDuplicateGroups(items, 'normalized')).toEqual([]);
+    expect(normalizeUrl('https://app.example.com/#/settings?utm_source=x')).toBe(
+      'https://app.example.com/#/settings?utm_source=x',
+    );
+  });
+
+  it('never deletes the last remaining copy when the originally kept bookmark was removed externally', () => {
+    // Originally two copies existed: b2 (kept) and b1 (planned for removal).
+    // Before confirmation, b2 was deleted externally, leaving only b1 live.
+    const liveAfterExternalDelete = [
+      makeBookmark('b1', 'https://example.com/only-left', 1000),
+      makeBookmark('c3', 'https://example.com/still-dup', 3000),
+      makeBookmark('c2', 'https://example.com/still-dup', 2000),
+      makeBookmark('c1', 'https://example.com/still-dup', 1000),
+    ];
+
+    const targetKeys = new Set([
+      'https://example.com/only-left',
+      'https://example.com/still-dup',
+    ]);
+    const removable = computeSafeRemovableDuplicates(
+      liveAfterExternalDelete,
+      'exact',
+      targetKeys,
+    );
+
+    // b1 MUST NOT be deleted because it is now the sole remaining copy
+    expect(removable.map((i) => i.id)).toEqual(['c2', 'c1']);
+  });
+
+  it('supports oldest-first retention strategy when deduplicating', () => {
+    const items = [
+      makeBookmark('b2', 'https://example.com/page', 2000),
+      makeBookmark('b1', 'https://example.com/page', 1000),
+      makeBookmark('b3', 'https://example.com/page', 3000),
+    ];
+
+    const groups = findDuplicateGroups(items, 'exact', undefined, 'oldest');
+    expect(groups).toHaveLength(1);
+    expect(groups[0].items.map((i) => i.id)).toEqual(['b1', 'b2', 'b3']);
+
+    const removable = computeSafeRemovableDuplicates(
+      items,
+      'exact',
+      undefined,
+      undefined,
+      'oldest',
+    );
+    expect(removable.map((i) => i.id)).toEqual(['b2', 'b3']);
   });
 });

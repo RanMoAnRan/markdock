@@ -284,6 +284,52 @@ describe('checkSingleBookmark & ScanRunner', () => {
     expect(res2.status).toBe('restricted');
   });
 
+  it('re-verifies HEAD 404/410 with GET before classifying as confirmed dead_404', async () => {
+    // 1. HEAD returns 404, GET returns 200 -> valid
+    const head404Get200 = vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === 'HEAD') return new Response(null, { status: 404 });
+      return new Response('<html>ok</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    });
+    const resValid = await checkSingleBookmark(
+      makeBookmark('h1', 'https://no-head.example.com/page'),
+      DEFAULT_SCAN_SETTINGS,
+      [],
+      head404Get200,
+    );
+    expect(resValid.status).toBe('valid');
+    expect(head404Get200).toHaveBeenCalledTimes(2);
+
+    // 2. HEAD returns 404, GET also returns 404 -> confirmed dead_404
+    const both404 = vi.fn<typeof fetch>(async () => new Response('Not found', { status: 404 }));
+    const resDead = await checkSingleBookmark(
+      makeBookmark('h2', 'https://dead.example.com/missing'),
+      DEFAULT_SCAN_SETTINGS,
+      [],
+      both404,
+    );
+    expect(resDead.status).toBe('dead_404');
+    expect(both404).toHaveBeenCalledTimes(2);
+
+    // 3. HEAD returns 410, GET cannot verify (CORS blocked, no-cors reachable) -> NOT dead_404
+    const head410GetBlocked = vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === 'HEAD') return new Response(null, { status: 410 });
+      if (init?.mode === 'no-cors') {
+        return { type: 'opaque', status: 0, ok: false, redirected: false, url: '', headers: new Headers() } as Response;
+      }
+      throw new TypeError('Failed to fetch');
+    });
+    const resRestricted = await checkSingleBookmark(
+      makeBookmark('h3', 'https://unverifiable.example.com/item'),
+      DEFAULT_SCAN_SETTINGS,
+      [],
+      head410GetBlocked,
+    );
+    expect(resRestricted.status).toBe('restricted');
+  });
+
   it('ScanRunner respects concurrency limit and completes all items', async () => {
     let active = 0;
     let maxActive = 0;

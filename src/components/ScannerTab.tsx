@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   AlertCircle,
   ArrowRight,
@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Clock,
   ExternalLink,
+  LocateFixed,
   Pause,
   Pencil,
   Play,
@@ -26,8 +27,9 @@ import type {
   ScanSettings,
   WhitelistEntry,
 } from '../types/bookmark';
-import { ScanRunner, checkSingleBookmark } from '../core/checker';
+import { type RunnerState, checkSingleBookmark } from '../core/checker';
 import { filterBookmarksByFolder, updateBookmarkUrl } from '../core/bookmarks';
+import { locateNodeInSidebar } from '../core/locate';
 import { ConfirmDialog } from './ConfirmDialog';
 
 type FilterBucket = 'all_issues' | CheckStatus;
@@ -39,10 +41,18 @@ interface ScannerTabProps {
   settings: ScanSettings;
   whitelist: WhitelistEntry[];
   results: CheckResult[];
+  scanState: RunnerState;
+  scanTotal: number;
+  scanChecked: number;
   selectedFolderId: string;
   onSelectFolder: (folderId: string) => void;
+  onStartScan: (targets: BookmarkItem[], preserveExisting: boolean) => Promise<void>;
+  onPauseScan: () => void;
+  onResumeScan: () => void;
+  onStopScan: () => void;
+  onResetScan: () => void;
   onResultsChange: (next: CheckResult[], persist?: boolean) => void;
-  onDeleteBookmarks: (items: BookmarkItem[], reason: string) => Promise<void>;
+  onDeleteBookmarks: (items: BookmarkItem[], reason: string) => Promise<string[]>;
   onAddWhitelist: (pattern: string, matchType: 'url' | 'domain') => Promise<void>;
   onNotify: (message: string, type?: 'success' | 'info' | 'error') => void;
   onBookmarksUpdated: () => Promise<void>;
@@ -59,63 +69,70 @@ const BUCKET_META: Array<{
     key: 'all_issues',
     label: '全部异常',
     shortDesc: '不含有效与跳过',
-    colorClass: 'text-slate-800 bg-slate-100',
-    activeRing: 'ring-2 ring-slate-800 border-slate-800',
+    colorClass: 'text-slate-800 dark:text-slate-100 bg-slate-100 dark:bg-slate-800',
+    activeRing: 'ring-2 ring-slate-800 dark:ring-slate-200 border-slate-800 dark:border-slate-200',
   },
   {
     key: 'dead_404',
     label: '确定失效 (404)',
     shortDesc: '404 / 410',
-    colorClass: 'text-rose-700 bg-rose-50',
+    colorClass: 'text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60',
     activeRing: 'ring-2 ring-rose-500 border-rose-500',
   },
   {
     key: 'dns_network',
     label: '连接 / DNS 失败',
     shortDesc: '域名死链或断连',
-    colorClass: 'text-red-700 bg-red-50',
+    colorClass: 'text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/60',
     activeRing: 'ring-2 ring-red-500 border-red-500',
   },
   {
     key: 'timeout',
     label: '请求超时',
     shortDesc: '可单独重试',
-    colorClass: 'text-amber-700 bg-amber-50',
+    colorClass: 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60',
     activeRing: 'ring-2 ring-amber-500 border-amber-500',
   },
   {
     key: 'server_5xx',
     label: '服务器错误 (5xx)',
     shortDesc: '站点临时故障',
-    colorClass: 'text-orange-700 bg-orange-50',
+    colorClass: 'text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-950/60',
     activeRing: 'ring-2 ring-orange-500 border-orange-500',
+  },
+  {
+    key: 'client_4xx',
+    label: '请求异常 (4xx)',
+    shortDesc: '400 / 405 等',
+    colorClass: 'text-amber-800 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/60',
+    activeRing: 'ring-2 ring-amber-500 border-amber-500',
   },
   {
     key: 'redirect',
     label: '链接重定向',
     shortDesc: '可一键更新地址',
-    colorClass: 'text-blue-700 bg-blue-50',
+    colorClass: 'text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/60',
     activeRing: 'ring-2 ring-blue-500 border-blue-500',
   },
   {
     key: 'restricted',
     label: '受限 / 人机验证',
     shortDesc: '防误杀保护中',
-    colorClass: 'text-purple-700 bg-purple-50',
+    colorClass: 'text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-950/60',
     activeRing: 'ring-2 ring-purple-500 border-purple-500',
   },
   {
     key: 'valid',
     label: '正常有效',
     shortDesc: 'HTTP 2xx',
-    colorClass: 'text-emerald-700 bg-emerald-50',
+    colorClass: 'text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60',
     activeRing: 'ring-2 ring-emerald-500 border-emerald-500',
   },
   {
     key: 'skipped',
     label: '已跳过',
     shortDesc: '本地/白名单',
-    colorClass: 'text-slate-600 bg-slate-100',
+    colorClass: 'text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800',
     activeRing: 'ring-2 ring-slate-400 border-slate-400',
   },
 ];
@@ -124,42 +141,42 @@ function StatusBadge({ result }: { result: CheckResult }) {
   switch (result.status) {
     case 'dead_404':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-1 text-xs font-medium text-rose-700 border border-rose-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 dark:bg-rose-950/60 px-2.5 py-1 text-xs font-medium text-rose-700 dark:text-rose-300 border border-rose-200/70 dark:border-rose-800">
           <AlertCircle className="h-3.5 w-3.5" />
           确定失效 {result.httpStatus ?? 404}
         </span>
       );
     case 'dns_network':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 border border-red-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-50 dark:bg-red-950/60 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 border border-red-200/70 dark:border-red-800">
           <WifiOff className="h-3.5 w-3.5" />
           连接 / DNS 失败
         </span>
       );
     case 'timeout':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700 border border-amber-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-950/60 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800">
           <Clock className="h-3.5 w-3.5" />
           请求超时
         </span>
       );
     case 'server_5xx':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2.5 py-1 text-xs font-medium text-orange-700 border border-orange-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-950/60 px-2.5 py-1 text-xs font-medium text-orange-700 dark:text-orange-300 border border-orange-200/70 dark:border-orange-800">
           <AlertCircle className="h-3.5 w-3.5" />
           服务器错误 {result.httpStatus}
         </span>
       );
     case 'client_4xx':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 border border-amber-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-950/60 px-2.5 py-1 text-xs font-medium text-amber-800 dark:text-amber-300 border border-amber-200/70 dark:border-amber-800">
           <AlertCircle className="h-3.5 w-3.5" />
           请求异常 {result.httpStatus}
         </span>
       );
     case 'redirect':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 border border-blue-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 dark:bg-blue-950/60 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 border border-blue-200/70 dark:border-blue-800">
           <ArrowRight className="h-3.5 w-3.5" />
           {result.redirectSubType === 'http_to_https'
             ? 'HTTPS 升级'
@@ -170,7 +187,7 @@ function StatusBadge({ result }: { result: CheckResult }) {
       );
     case 'restricted':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 px-2.5 py-1 text-xs font-medium text-purple-700 border border-purple-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-purple-50 dark:bg-purple-950/60 px-2.5 py-1 text-xs font-medium text-purple-700 dark:text-purple-300 border border-purple-200/70 dark:border-purple-800">
           <ShieldAlert className="h-3.5 w-3.5" />
           {result.restrictedSubType === 'bot_challenge'
             ? '人机验证 / WAF'
@@ -179,14 +196,14 @@ function StatusBadge({ result }: { result: CheckResult }) {
       );
     case 'valid':
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 border border-emerald-200/70">
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-300 border border-emerald-200/70 dark:border-emerald-800">
           <CheckCircle2 className="h-3.5 w-3.5" />
           有效
         </span>
       );
     default:
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300">
           已跳过
         </span>
       );
@@ -200,21 +217,22 @@ export function ScannerTab({
   settings,
   whitelist,
   results,
+  scanState,
+  scanTotal,
+  scanChecked,
   selectedFolderId,
   onSelectFolder,
+  onStartScan,
+  onPauseScan,
+  onResumeScan,
+  onStopScan,
+  onResetScan,
   onResultsChange,
   onDeleteBookmarks,
   onAddWhitelist,
   onNotify,
   onBookmarksUpdated,
 }: ScannerTabProps) {
-  const runnerRef = useRef<ScanRunner | null>(null);
-  const resultsMapRef = useRef<Map<string, CheckResult>>(new Map());
-
-  const [scanState, setScanState] = useState<'idle' | 'running' | 'paused' | 'stopped' | 'completed'>('idle');
-  const [scanTotal, setScanTotal] = useState(0);
-  const [scanChecked, setScanChecked] = useState(0);
-
   const [activeBucket, setActiveBucket] = useState<FilterBucket>('all_issues');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -287,7 +305,7 @@ export function ScannerTab({
   const confirmedDeadItems = useMemo(
     () =>
       results
-        .filter((r) => r.status === 'dead_404' || r.status === 'dns_network')
+        .filter((r) => r.status === 'dead_404')
         .map((r) => r.bookmark),
     [results],
   );
@@ -345,70 +363,27 @@ export function ScannerTab({
   );
 
   const runBatchScan = async (targets: BookmarkItem[], preserveExisting: boolean) => {
-    if (targets.length === 0) {
-      onNotify('当前范围内没有可检测的书签', 'info');
-      return;
-    }
-
-    const runner = new ScanRunner();
-    runnerRef.current = runner;
-    setScanState('running');
-    setScanTotal(targets.length);
-    setScanChecked(0);
-
-    const map = new Map<string, CheckResult>();
-    if (preserveExisting) {
-      for (const r of results) {
-        map.set(r.bookmark.id, r);
-      }
-    }
-    resultsMapRef.current = map;
-
     if (!preserveExisting) {
       setSelectedIds(new Set());
-      onResultsChange([], false);
     }
-
-    let checked = 0;
-    await runner.start(targets, settings, whitelist, (res) => {
-      checked++;
-      map.set(res.bookmark.id, res);
-      setScanChecked(checked);
-      onResultsChange([...map.values()], false);
-    });
-
-    const finalState = runner.getState();
-    setScanState(finalState);
-    onResultsChange([...map.values()], true);
-    if (finalState === 'completed') {
-      onNotify(`检测完成，共扫描 ${targets.length} 条书签`, 'success');
-    }
+    await onStartScan(targets, preserveExisting);
   };
 
   const handlePause = () => {
-    runnerRef.current?.pause();
-    setScanState('paused');
+    onPauseScan();
   };
 
   const handleResume = () => {
-    runnerRef.current?.resume();
-    setScanState('running');
+    onResumeScan();
   };
 
   const handleStop = () => {
-    runnerRef.current?.stop();
-    setScanState('stopped');
-    onResultsChange([...resultsMapRef.current.values()], true);
-    onNotify('已停止检测并保存当前结果快照', 'info');
+    onStopScan();
   };
 
   const handleReset = () => {
-    runnerRef.current?.stop();
-    setScanState('idle');
-    setScanTotal(0);
-    setScanChecked(0);
     setSelectedIds(new Set());
-    onResultsChange([], true);
+    onResetScan();
   };
 
   const toggleSelect = (id: string) => {
@@ -437,8 +412,9 @@ export function ScannerTab({
   };
 
   const performDelete = async (items: BookmarkItem[], reason: string) => {
-    await onDeleteBookmarks(items, reason);
-    const removedSet = new Set(items.map((i) => i.id));
+    const removedIds = await onDeleteBookmarks(items, reason);
+    if (removedIds.length === 0) return;
+    const removedSet = new Set(removedIds);
     onResultsChange(
       results.filter((r) => !removedSet.has(r.bookmark.id)),
       true,
@@ -472,9 +448,9 @@ export function ScannerTab({
     if (confirmedDeadItems.length === 0) return;
     setConfirmState({
       open: true,
-      title: `一键清理 ${confirmedDeadItems.length} 条确定失效书签？`,
+      title: `一键清理 ${confirmedDeadItems.length} 条确定失效 (404/410) 书签？`,
       description:
-        '仅清理「确定失效 (404/410)」与「连接/DNS 失败」书签。\n「受限/人机验证」「超时」「重定向」不会被删除，且所有已删项均会进入本地回收站。',
+        '仅清理服务器明确返回「确定失效 (HTTP 404/410)」的书签。\n「连接/DNS 失败」「受限/人机验证」「超时」「重定向」不会被删除（如需清理 DNS 失败可切换至对应分类一键删除），且所有已删项均会进入本地回收站。',
       onConfirm: async () => {
         setConfirmState((s) => ({ ...s, open: false }));
         await performDelete(confirmedDeadItems, '一键清理确定失效');
@@ -581,15 +557,15 @@ export function ScannerTab({
   return (
     <div className="space-y-5">
       {/* Control Card */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-sm font-medium text-slate-700">扫描范围</label>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-300">扫描范围</label>
             <select
               value={selectedFolderId}
               disabled={scanState === 'running' || scanState === 'paused'}
               onChange={(e) => onSelectFolder(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:bg-white focus:outline-none min-w-[220px]"
+              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-sm text-slate-800 dark:text-slate-100 focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 focus:outline-none min-w-[220px]"
             >
               <option value="all">全部书签 ({bookmarks.length})</option>
               {folders.map((folder) => (
@@ -638,7 +614,7 @@ export function ScannerTab({
               <button
                 type="button"
                 onClick={handleStop}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2 text-sm font-medium text-rose-700 hover:bg-rose-100 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 px-3.5 py-2 text-sm font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/60 transition-colors cursor-pointer"
               >
                 <Square className="h-3.5 w-3.5" />
                 <span>停止</span>
@@ -649,7 +625,7 @@ export function ScannerTab({
               <button
                 type="button"
                 onClick={handleReset}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3.5 py-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
               >
                 <RotateCcw className="h-4 w-4" />
                 <span>清空结果</span>
@@ -660,7 +636,7 @@ export function ScannerTab({
 
         {(scanState === 'running' || scanState === 'paused' || scanTotal > 0) && (
           <div className="mt-4">
-            <div className="flex items-center justify-between text-xs text-slate-600 mb-1.5">
+            <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 mb-1.5">
               <span>
                 {scanState === 'running'
                   ? '正在检测中...'
@@ -674,7 +650,7 @@ export function ScannerTab({
                 {scanChecked} / {scanTotal} ({progressPct}%)
               </span>
             </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+            <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
               <div
                 className={`h-full rounded-full transition-all duration-300 ${
                   scanState === 'paused' ? 'bg-amber-500' : 'bg-blue-600'
@@ -687,7 +663,7 @@ export function ScannerTab({
       </div>
 
       {/* Category Summary Cards */}
-      <div className="grid grid-cols-3 sm:grid-cols-5 lg:grid-cols-9 gap-2.5">
+      <div className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-2.5">
         {BUCKET_META.map((bucket) => {
           const isActive = activeBucket === bucket.key;
           const count = counts[bucket.key] ?? 0;
@@ -699,17 +675,17 @@ export function ScannerTab({
                 setActiveBucket(bucket.key);
                 setPage(1);
               }}
-              className={`flex flex-col items-start rounded-xl border bg-white p-3 text-left transition-all cursor-pointer hover:shadow-xs ${
-                isActive ? bucket.activeRing : 'border-slate-200 hover:border-slate-300'
+              className={`flex flex-col items-start rounded-xl border bg-white dark:bg-slate-900 p-3 text-left transition-all cursor-pointer hover:shadow-xs ${
+                isActive ? bucket.activeRing : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
               }`}
             >
-              <span className="text-xs font-medium text-slate-500 truncate w-full">
+              <span className="text-xs font-medium text-slate-500 dark:text-slate-400 truncate w-full">
                 {bucket.label}
               </span>
               <span className={`mt-1.5 inline-flex rounded-md px-2 py-0.5 text-lg font-bold tabular-nums ${bucket.colorClass}`}>
                 {count}
               </span>
-              <span className="mt-1 text-[11px] text-slate-400 truncate w-full">
+              <span className="mt-1 text-[11px] text-slate-400 dark:text-slate-500 truncate w-full">
                 {bucket.shortDesc}
               </span>
             </button>
@@ -718,7 +694,7 @@ export function ScannerTab({
       </div>
 
       {/* Bulk Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs">
         <div className="relative flex-1 min-w-[240px] max-w-md">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
@@ -729,7 +705,7 @@ export function ScannerTab({
               setPage(1);
             }}
             placeholder="搜索标题、链接、文件夹路径或错误原因..."
-            className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm text-slate-800 focus:border-blue-500 focus:bg-white focus:outline-none"
+            className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 py-2 pl-9 pr-3 text-sm text-slate-800 dark:text-slate-100 focus:border-blue-500 focus:bg-white dark:focus:bg-slate-800 focus:outline-none"
           />
         </div>
 
@@ -741,7 +717,7 @@ export function ScannerTab({
               <button
                 type="button"
                 onClick={() => runBatchScan(currentBucketAllItems, true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-3 py-2 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors cursor-pointer"
                 title={`重新检测「${activeBucketMeta.label}」下的全部书签`}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
@@ -756,7 +732,7 @@ export function ScannerTab({
               <button
                 type="button"
                 onClick={() => runBatchScan(retryableItems, true)}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100 transition-colors cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/50 px-3 py-2 text-xs font-medium text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors cursor-pointer"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 <span>重试超时/网络异常 ({retryableItems.length})</span>
@@ -767,7 +743,7 @@ export function ScannerTab({
             <button
               type="button"
               onClick={() => handleUpdateRedirect(selectedRedirects)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-3 py-2 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors cursor-pointer"
             >
               <ArrowRight className="h-3.5 w-3.5" />
               <span>一键更新选中重定向 ({selectedRedirects.length})</span>
@@ -778,7 +754,7 @@ export function ScannerTab({
             type="button"
             disabled={selectedIds.size === 0}
             onClick={handleDeleteSelected}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-white px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 dark:border-rose-800 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-950/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
           >
             <Trash2 className="h-3.5 w-3.5" />
             <span>清理选中 ({selectedIds.size})</span>
@@ -789,7 +765,7 @@ export function ScannerTab({
               type="button"
               disabled={currentBucketItems.length === 0}
               onClick={handleDeleteCurrentBucket}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/50 px-3 py-2 text-xs font-medium text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-900/60 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
               title={`一键删除当前选中分类「${activeBucketMeta.label}」下的全部书签`}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -804,20 +780,20 @@ export function ScannerTab({
             disabled={confirmedDeadItems.length === 0}
             onClick={handleCleanConfirmedDead}
             className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3.5 py-2 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer"
-            title="仅清理 404/410 和 DNS/连接失败，绝不误删人机验证/受限链接"
+            title="仅清理服务器明确返回 404/410 的确定失效链接，绝不误删断网/人机验证/受限链接"
           >
             <Trash2 className="h-3.5 w-3.5" />
-            <span>一键清理确定失效 ({confirmedDeadItems.length})</span>
+            <span>一键清理确定失效 404 ({confirmedDeadItems.length})</span>
           </button>
         </div>
       </div>
 
       {/* Results Table */}
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs">
+      <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold text-slate-600">
+              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/60 text-xs font-semibold text-slate-600 dark:text-slate-300">
                 <th className="w-12 px-4 py-3 text-center">
                   <input
                     type="checkbox"
@@ -830,13 +806,13 @@ export function ScannerTab({
                 <th className="px-4 py-3 min-w-[220px]">书签与目录路径</th>
                 <th className="px-4 py-3 min-w-[280px]">链接地址</th>
                 <th className="px-4 py-3 min-w-[220px]">检测状态与原因</th>
-                <th className="px-4 py-3 text-right min-w-[150px]">操作</th>
+                <th className="px-4 py-3 text-right min-w-[180px]">操作</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-sm">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
               {pagedResults.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-6 py-16 text-center text-slate-400">
+                  <td colSpan={5} className="px-6 py-16 text-center text-slate-400 dark:text-slate-500">
                     {results.length === 0
                       ? '点击上方「开始检测」扫描你的书签，结果将按错误类型自动分类展示。'
                       : '当前筛选条件下没有匹配的书签。'}
@@ -851,7 +827,7 @@ export function ScannerTab({
                   return (
                     <tr
                       key={bookmark.id}
-                      className="hover:bg-slate-50/70 transition-colors align-top"
+                      className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors align-top"
                     >
                       <td className="px-4 py-3.5 text-center">
                         <input
@@ -862,10 +838,10 @@ export function ScannerTab({
                         />
                       </td>
                       <td className="px-4 py-3.5">
-                        <div className="font-medium text-slate-900 line-clamp-1">
+                        <div className="font-medium text-slate-900 dark:text-slate-100 line-clamp-1">
                           {bookmark.title}
                         </div>
-                        <div className="mt-0.5 text-xs text-slate-400 line-clamp-1">
+                        <div className="mt-0.5 text-xs text-slate-400 dark:text-slate-500 line-clamp-1">
                           {bookmark.folderPath.join(' / ') || '根目录'}
                         </div>
                       </td>
@@ -881,7 +857,7 @@ export function ScannerTab({
                                 if (e.key === 'Enter') handleSaveInlineUrl(bookmark);
                                 if (e.key === 'Escape') setEditingId(null);
                               }}
-                              className="w-full rounded-md border border-blue-400 px-2.5 py-1 text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                              className="w-full rounded-md border border-blue-400 bg-white dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
                             />
                             <button
                               type="button"
@@ -894,7 +870,7 @@ export function ScannerTab({
                             <button
                               type="button"
                               onClick={() => setEditingId(null)}
-                              className="rounded-md border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-100 cursor-pointer"
+                              className="rounded-md border border-slate-200 dark:border-slate-700 p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                               title="取消"
                             >
                               <X className="h-3.5 w-3.5" />
@@ -907,7 +883,7 @@ export function ScannerTab({
                                 href={bookmark.url}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="truncate text-xs text-blue-600 hover:underline max-w-[320px]"
+                                className="truncate text-xs text-blue-600 dark:text-blue-400 hover:underline max-w-[320px]"
                                 title={bookmark.url}
                               >
                                 {bookmark.url}
@@ -916,7 +892,7 @@ export function ScannerTab({
                                 href={bookmark.url}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="shrink-0 text-slate-400 hover:text-blue-600"
+                                className="shrink-0 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
                                 title="在新标签页打开核对"
                               >
                                 <ExternalLink className="h-3.5 w-3.5" />
@@ -927,14 +903,14 @@ export function ScannerTab({
                                   setEditingId(bookmark.id);
                                   setEditingUrl(bookmark.url);
                                 }}
-                                className="shrink-0 text-slate-400 hover:text-slate-700 cursor-pointer"
+                                className="shrink-0 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
                                 title="编辑链接（回车保存并重测）"
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                               </button>
                             </div>
                             {result.finalUrl && result.finalUrl !== bookmark.url && (
-                              <div className="flex items-center gap-1 text-[11px] text-slate-500 truncate max-w-[360px]">
+                              <div className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 truncate max-w-[360px]">
                                 <ArrowRight className="h-3 w-3 shrink-0 text-blue-500" />
                                 <span className="truncate" title={result.finalUrl}>
                                   {result.finalUrl}
@@ -946,7 +922,7 @@ export function ScannerTab({
                       </td>
                       <td className="px-4 py-3.5">
                         <StatusBadge result={result} />
-                        <div className="mt-1 text-xs text-slate-500 line-clamp-2">
+                        <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-2">
                           {result.reason}
                         </div>
                       </td>
@@ -956,7 +932,7 @@ export function ScannerTab({
                             <button
                               type="button"
                               onClick={() => handleUpdateRedirect([result])}
-                              className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 cursor-pointer"
+                              className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/50 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60 cursor-pointer"
                               title="将书签更新为目标新地址"
                             >
                               更新
@@ -964,9 +940,20 @@ export function ScannerTab({
                           )}
                           <button
                             type="button"
+                            onClick={async () => {
+                              await locateNodeInSidebar(bookmark.id);
+                              onNotify(`已在侧边栏定位「${bookmark.title}」`, 'info');
+                            }}
+                            className="rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer"
+                            title="在侧边栏定位该书签"
+                          >
+                            <LocateFixed className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
                             disabled={isRechecking}
                             onClick={() => handleSingleRecheck(bookmark)}
-                            className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 disabled:opacity-40 cursor-pointer"
+                            className="rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 disabled:opacity-40 cursor-pointer"
                             title="重新检测此条"
                           >
                             <RotateCcw
@@ -976,7 +963,7 @@ export function ScannerTab({
                           <button
                             type="button"
                             onClick={() => handleIgnoreToWhitelist(result)}
-                            className="rounded-lg border border-emerald-200 p-1.5 text-emerald-600 hover:bg-emerald-50 cursor-pointer"
+                            className="rounded-lg border border-emerald-200 dark:border-emerald-800 p-1.5 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/50 cursor-pointer"
                             title="忽略并加入白名单"
                           >
                             <ShieldCheck className="h-3.5 w-3.5" />
@@ -994,7 +981,7 @@ export function ScannerTab({
                                 },
                               })
                             }
-                            className="rounded-lg border border-rose-200 p-1.5 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                            className="rounded-lg border border-rose-200 dark:border-rose-800 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
                             title="删除到回收站"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -1011,7 +998,7 @@ export function ScannerTab({
 
         {/* Pagination */}
         {filteredResults.length > 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/60 px-4 py-3 text-xs text-slate-600">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 px-4 py-3 text-xs text-slate-600 dark:text-slate-400">
             <div className="flex items-center gap-2">
               <span>共 {filteredResults.length} 条</span>
               <select
@@ -1020,7 +1007,7 @@ export function ScannerTab({
                   setPageSize(Number(e.target.value));
                   setPage(1);
                 }}
-                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+                className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
               >
                 <option value={20}>20 条/页</option>
                 <option value={50}>50 条/页</option>
@@ -1032,7 +1019,7 @@ export function ScannerTab({
                 type="button"
                 disabled={safePage <= 1}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+                className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 cursor-pointer"
               >
                 上一页
               </button>
@@ -1043,7 +1030,7 @@ export function ScannerTab({
                 type="button"
                 disabled={safePage >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 hover:bg-slate-50 disabled:opacity-40 cursor-pointer"
+                className="rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-40 cursor-pointer"
               >
                 下一页
               </button>

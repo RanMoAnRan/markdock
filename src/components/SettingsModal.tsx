@@ -41,14 +41,14 @@ export function SettingsModal({
       <div
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-lg rounded-2xl bg-white shadow-xl border border-slate-200 overflow-hidden"
+        className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden"
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-          <h2 className="text-base font-semibold text-slate-900">检测设置</h2>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+          <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">检测设置</h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors cursor-pointer"
+            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
             aria-label="关闭设置"
           >
             <X className="h-4 w-4" />
@@ -58,7 +58,7 @@ export function SettingsModal({
         <div className="space-y-5 p-6">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                 并发请求数（1–20）
               </label>
               <input
@@ -69,14 +69,14 @@ export function SettingsModal({
                 onChange={(e) =>
                   setDraft({ ...draft, concurrency: Number(e.target.value) })
                 }
-                className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                 建议 6–10，过高容易触发站点限流 (429)
               </p>
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
                 单条超时时间（3–60 秒）
               </label>
               <input
@@ -87,20 +87,20 @@ export function SettingsModal({
                 onChange={(e) =>
                   setDraft({ ...draft, timeoutSeconds: Number(e.target.value) })
                 }
-                className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                className="mt-1.5 w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               />
-              <p className="mt-1 text-xs text-slate-500">
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                 海外或代理站点较慢时可适当调大
               </p>
             </div>
           </div>
 
-          <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 p-4 cursor-pointer hover:bg-slate-50/70 transition-colors">
+          <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 dark:border-slate-700 p-4 cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors">
             <div>
-              <div className="text-sm font-medium text-slate-900">
+              <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
                 检测时携带浏览器登录态（Cookie）
               </div>
-              <p className="mt-1 text-xs text-slate-500 leading-relaxed">
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 推荐开启。可避免 GitHub 私有仓库、私有文档和已登录系统返回 404 或跳转登录页而造成误判；插件会自动跳过 /logout 等登出链接。
               </p>
             </div>
@@ -114,12 +114,12 @@ export function SettingsModal({
             />
           </label>
 
-          <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 p-4 cursor-pointer hover:bg-slate-50/70 transition-colors">
+          <label className="flex items-start justify-between gap-4 rounded-xl border border-slate-200 dark:border-slate-700 p-4 cursor-pointer hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors">
             <div>
-              <div className="text-sm font-medium text-slate-900">
+              <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
                 自动跳过本地与内网地址
               </div>
-              <p className="mt-1 text-xs text-slate-500 leading-relaxed">
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 跳过 localhost、127.0.0.1、192.168.x.x、10.x.x.x 及 *.local 书签，避免本地服务未启动时被误报失效。
               </p>
             </div>
@@ -132,11 +132,11 @@ export function SettingsModal({
           </label>
         </div>
 
-        <div className="flex items-center justify-end gap-2.5 bg-slate-50 px-6 py-3.5 border-t border-slate-100">
+        <div className="flex items-center justify-end gap-2.5 bg-slate-50 dark:bg-slate-800/60 px-6 py-3.5 border-t border-slate-100 dark:border-slate-800">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors cursor-pointer"
+            className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
           >
             取消
           </button>

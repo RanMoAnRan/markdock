@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FolderOpen, LocateFixed, Trash2 } from 'lucide-react';
 import type { EmptyFolderItem } from '../types/bookmark';
 import { removeEmptyFolders } from '../core/folders';
-import { savePendingLocateFolder } from '../core/storage';
+import { locateNodeInSidebar } from '../core/locate';
 import { ConfirmDialog } from './ConfirmDialog';
 
 interface EmptyFoldersTabProps {
@@ -33,33 +33,7 @@ export function EmptyFoldersTab({
   }, []);
 
   const handleLocateInSidebar = async (folder: EmptyFolderItem) => {
-    // Save pending locate target first (non-blocking before sidePanel.open to preserve user gesture)
-    const savePromise = savePendingLocateFolder(folder.id);
-
-    if (typeof chrome !== 'undefined' && chrome.sidePanel?.open) {
-      const winId = currentWindowIdRef.current;
-      if (winId !== undefined) {
-        try {
-          void chrome.sidePanel.open({ windowId: winId });
-        } catch {
-          // Side panel may already be open
-        }
-      }
-    }
-
-    await savePromise;
-
-    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-      try {
-        await chrome.runtime.sendMessage({
-          type: 'LOCATE_FOLDER',
-          folderId: folder.id,
-        });
-      } catch {
-        // Side panel may still be mounting and will consume pending locate on mount
-      }
-    }
-
+    await locateNodeInSidebar(folder.id, currentWindowIdRef.current);
     onNotify(`已在侧边栏定位「${folder.title}」`, 'info');
   };
 
@@ -71,12 +45,12 @@ export function EmptyFoldersTab({
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs">
         <div>
-          <h2 className="text-sm font-semibold text-slate-900">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             空文件夹检测（共 {emptyFolders.length} 个）
           </h2>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             包含完全为空的文件夹以及仅包含空子目录的文件夹（已自动保护书签栏、其他书签等根容器）。
           </p>
         </div>
@@ -93,26 +67,26 @@ export function EmptyFoldersTab({
       </div>
 
       {emptyFolders.length === 0 ? (
-        <div className="rounded-2xl border border-slate-200 bg-white py-16 text-center text-slate-400">
-          <FolderOpen className="mx-auto h-10 w-10 text-slate-300 mb-3" />
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 py-16 text-center text-slate-400 dark:text-slate-500">
+          <FolderOpen className="mx-auto h-10 w-10 text-slate-300 dark:text-slate-700 mb-3" />
           <p className="text-sm">当前没有空文件夹，书签目录很整洁！</p>
         </div>
       ) : (
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs divide-y divide-slate-100">
+        <div className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs divide-y divide-slate-100 dark:divide-slate-800">
           {emptyFolders.map((folder) => (
             <div
               key={folder.id}
               onClick={() => void handleLocateInSidebar(folder)}
-              className="group flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-blue-50/50 cursor-pointer transition-colors"
+              className="group flex items-center justify-between gap-4 px-5 py-3.5 hover:bg-blue-50/50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors"
               title="点击在侧边栏定位该文件夹"
             >
               <div className="flex items-center gap-3 min-w-0">
                 <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" />
                 <div className="min-w-0">
-                  <div className="text-sm font-medium text-slate-900 group-hover:text-blue-700 truncate transition-colors">
+                  <div className="text-sm font-medium text-slate-900 dark:text-slate-100 group-hover:text-blue-700 dark:group-hover:text-blue-400 truncate transition-colors">
                     {folder.title}
                   </div>
-                  <div className="text-xs text-slate-400 truncate">
+                  <div className="text-xs text-slate-400 dark:text-slate-500 truncate">
                     {folder.path.join(' / ')}
                   </div>
                 </div>
@@ -124,7 +98,7 @@ export function EmptyFoldersTab({
                     e.stopPropagation();
                     void handleLocateInSidebar(folder);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:border-blue-300 hover:text-blue-600 cursor-pointer transition-colors"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 hover:border-blue-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer transition-colors"
                   title="在侧边栏定位"
                 >
                   <LocateFixed className="h-3.5 w-3.5" />
@@ -136,7 +110,7 @@ export function EmptyFoldersTab({
                     e.stopPropagation();
                     void handleDelete([folder]);
                   }}
-                  className="rounded-lg border border-rose-200 px-3 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
+                  className="rounded-lg border border-rose-200 dark:border-rose-800 px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer"
                 >
                   删除
                 </button>

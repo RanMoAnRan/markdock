@@ -3,7 +3,14 @@
   "name": "MarkDock",
   "version": "1.1.0",
   "description": "原生书签侧边栏（快捷键秒搜、自由拖拽排序、深色模式）+ 精准失效书签清理、去重与本地回收站二合一工具",
-  "permissions": ["bookmarks", "storage", "sidePanel", "tabs", "favicon"],
+  "permissions": [
+    "bookmarks",
+    "storage",
+    "sidePanel",
+    "tabs",
+    "favicon",
+    "declarativeNetRequestWithHostAccess"
+  ],
   "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_title": "打开 MarkDock 侧边栏"
@@ -12,19 +19,19 @@
     "default_path": "sidepanel.html"
   },
   "commands": {
-    "_execute_action": {
+    "focus-search": {
       "suggested_key": {
         "default": "Alt+B",
         "mac": "Alt+B"
       },
-      "description": "打开 / 切换书签侧边栏"
+      "description": "打开纯净书签搜索（隐藏 AI 侧栏）"
     },
-    "focus-search": {
+    "open-ai": {
       "suggested_key": {
-        "default": "Alt+K",
-        "mac": "Alt+K"
+        "default": "Alt+V",
+        "mac": "Alt+V"
       },
-      "description": "打开侧边栏并聚焦书签搜索框"
+      "description": "打开并展开 AI 侧栏"
     }
   },
   "background": {

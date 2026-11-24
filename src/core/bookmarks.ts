@@ -5,7 +5,13 @@ export function flattenBookmarkTree(
 ): BookmarkItem[] {
   const result: BookmarkItem[] = [];
 
-  function walk(node: chrome.bookmarks.BookmarkTreeNode, path: string[]): void {
+  function walk(
+    node: chrome.bookmarks.BookmarkTreeNode,
+    path: string[],
+    rootId?: string,
+  ): void {
+    const nextRootId =
+      rootId ?? (node.parentId === '0' ? node.id : undefined);
     const nextPath =
       node.id !== '0' && node.title ? [...path, node.title] : path;
 
@@ -13,6 +19,7 @@ export function flattenBookmarkTree(
       result.push({
         id: node.id,
         parentId: node.parentId ?? '1',
+        ...(nextRootId ? { rootId: nextRootId } : {}),
         title: node.title || node.url,
         url: node.url,
         dateAdded: node.dateAdded,
@@ -23,13 +30,13 @@ export function flattenBookmarkTree(
 
     if (node.children) {
       for (const child of node.children) {
-        walk(child, nextPath);
+        walk(child, nextPath, nextRootId);
       }
     }
   }
 
   for (const root of roots) {
-    walk(root, []);
+    walk(root, [], undefined);
   }
   return result;
 }

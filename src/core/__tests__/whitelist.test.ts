@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createWhitelistEntry, isWhitelisted } from '../whitelist';
+import {
+  createWhitelistEntry,
+  isWhitelisted,
+  normalizeWhitelistPattern,
+} from '../whitelist';
 
 describe('whitelist matcher', () => {
   it('matches exact URL entries', () => {
@@ -13,6 +17,20 @@ describe('whitelist matcher', () => {
     expect(isWhitelisted('https://internal.corp/dashboard', entries)).toBe(true);
     expect(isWhitelisted('https://docs.internal.corp/api', entries)).toBe(true);
     expect(isWhitelisted('https://notinternal.corp', entries)).toBe(false);
+  });
+
+  it('normalizes domain entries with ports, paths, queries, and leading dots', () => {
+    expect(
+      normalizeWhitelistPattern('https://Example.COM:8443/login?next=1#top', 'domain'),
+    ).toBe('example.com');
+    expect(normalizeWhitelistPattern('.sub.example.com:3000/', 'domain')).toBe(
+      'sub.example.com',
+    );
+    expect(normalizeWhitelistPattern('https://', 'domain')).toBe('');
+
+    const entry = createWhitelistEntry('https://Example.com:8080/admin', 'domain');
+    expect(entry.pattern).toBe('example.com');
+    expect(isWhitelisted('https://example.com/app', [entry])).toBe(true);
   });
 
   it('handles malformed URLs safely without throwing', () => {

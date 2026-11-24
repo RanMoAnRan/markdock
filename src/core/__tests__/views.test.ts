@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   getFrequentBookmarks,
   getRecentBookmarks,
+  prunePinnedIds,
   pruneVisitStats,
   recordBookmarkVisit,
 } from '../views';
@@ -73,5 +74,11 @@ describe('sidebar views & visit stats', () => {
     const frequent = getFrequentBookmarks(items, stats, 10);
     expect(frequent.map((f) => f.bookmark.id)).toEqual(['b2', 'b1', 'b3']);
     expect(frequent.map((f) => f.count)).toEqual([5, 5, 2]);
+  });
+
+  it('prunes deleted or duplicate pinned bookmark IDs while preserving user order', () => {
+    const pinned = ['b3', 'deleted-1', 'b1', 'b3', 'deleted-2'];
+    const liveIds = new Set(['b1', 'b2', 'b3']);
+    expect(prunePinnedIds(pinned, liveIds)).toEqual(['b3', 'b1']);
   });
 });

@@ -1,6 +1,7 @@
 export interface BookmarkItem {
   id: string;
   parentId: string;
+  rootId?: string;
   title: string;
   url: string;
   dateAdded?: number;
@@ -62,6 +63,7 @@ export interface RecycleBinEntry {
   url: string;
   folderPath: string[];
   parentId: string;
+  rootId?: string;
   deletedAt: number;
   reason: string;
 }

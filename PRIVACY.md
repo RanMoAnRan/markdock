@@ -1,6 +1,6 @@
 # Privacy Policy — MarkDock
 
-*Last Updated: 2026-11-23*
+*Last Updated: 2026-11-24*
 
 ## Overview
 
@@ -11,10 +11,11 @@
 To provide its core features, the extension accesses the following browser data strictly on your local device:
 
 - **Bookmarks (`bookmarks`)**: Read, search, reorder, edit, delete, and restore your bookmarks and folders.
-- **Local Storage (`storage`)**: Save your scan settings, whitelist rules, local recycle bin backups, pinned bookmarks, expanded folder states, and sidebar font size inside `chrome.storage.local` on your device.
+- **Local Storage (`storage`)**: Save your scan settings, whitelist rules, local recycle bin backups, pinned bookmarks, expanded folder states, sidebar font size, theme, AI sidebar site list, and dock layout preferences inside `chrome.storage.local` on your device.
 - **Browser Tabs (`tabs`)**: Open bookmarks in the current/new/background/incognito tab or window, bookmark the active tab, and toggle the Cleaner Workbench tab.
 - **Favicons (`favicon`)**: Display website icons next to bookmarks via the browser's built-in favicon service.
 - **Direct Link Checks (`http://*/*`, `https://*/*`)**: Only when you explicitly start a dead-link scan, your browser sends direct `HEAD` / `GET` requests from your device to the bookmarked URLs to check whether they are reachable, redirected, or broken. No third-party proxy or backend server is used.
+- **AI Sidebar Frame Compatibility (`declarativeNetRequestWithHostAccess`)**: Used strictly inside the extension's non-tab Side Panel context (`tabIds: [-1]`) and strictly scoped to the hostnames of AI websites you explicitly enable in the AI sidebar, removing frame-embedding restriction headers (`X-Frame-Options`, `Content-Security-Policy`, `Frame-Options`) so those sites can load inside the side panel. Normal browser tabs and all other websites are completely untouched, and MarkDock never reads, logs, or transmits your AI conversations or credentials.
 
 ## Data Collection & Third-Party Sharing
 
@@ -34,7 +35,7 @@ If you have any questions about this privacy policy, please open an issue in the
 
 # 隐私政策 — MarkDock
 
-*最后更新日期：2026-11-23*
+*最后更新日期：2026-11-24*
 
 ## 概述
 
@@ -45,10 +46,11 @@ If you have any questions about this privacy policy, please open an issue in the
 为实现核心功能，扩展仅在您的本地浏览器中访问以下数据：
 
 - **书签数据（`bookmarks`）**：用于读取、搜索、拖拽排序、编辑、删除及从本地回收站还原您的书签和文件夹。
-- **本地存储（`storage`）**：仅通过浏览器本地存储保存您的扫描设置、白名单规则、本地回收站备份、置顶书签、目录展开状态及侧边栏字号。
+- **本地存储（`storage`）**：仅通过浏览器本地存储保存您的扫描设置、白名单规则、本地回收站备份、置顶书签、目录展开状态、侧边栏字号/主题、AI 侧栏站点配置及切换栏位置偏好。
 - **标签页信息（`tabs`）**：用于在当前/新标签页/后台/无痕窗口打开书签、一键收藏当前网页，以及打开或收起清理工作台标签页。
 - **网站图标（`favicon`）**：通过浏览器内置图标服务在侧边栏展示书签图标。
 - **失效链接检测（`http://*/*`、`https://*/*`）**：仅在您主动点击「开始检测」时，由您的浏览器本地直接向书签目标网页发送 `HEAD`/`GET` 请求以判断链接状态，不经过任何第三方中转或后端服务器。
+- **AI 侧栏嵌入兼容（`declarativeNetRequestWithHostAccess`）**：仅在扩展侧边栏的非标签页上下文（`tabIds: [-1]`）中、且仅针对您在 AI 侧栏中主动启用的站点域名移除嵌入限制响应头（`X-Frame-Options`、`Content-Security-Policy`、`Frame-Options`），以支持在侧边栏内加载。所有普通浏览器标签页及其他网站完全不受影响，本扩展也绝不读取、记录或上传您的 AI 对话内容与账号凭据。
 
 ## 数据收集与共享声明
 

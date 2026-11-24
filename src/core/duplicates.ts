@@ -27,8 +27,14 @@ export function normalizeUrl(
     const parsed = new URL(rawUrl.trim());
     parsed.hostname = parsed.hostname.toLowerCase();
 
-    if (stripHash) {
-      parsed.hash = '';
+    if (stripHash && parsed.hash) {
+      // Preserve SPA hash-based application routes (e.g. #/settings, #!/dashboard)
+      // while stripping plain in-page section anchors (e.g. #top, #section-1).
+      const isAppHashRoute =
+        parsed.hash.startsWith('#/') || parsed.hash.startsWith('#!/');
+      if (!isAppHashRoute) {
+        parsed.hash = '';
+      }
     }
 
     if (stripTrackingParams && parsed.search) {
@@ -60,10 +66,13 @@ export function normalizeUrl(
   }
 }
 
+export type DuplicateKeepStrategy = 'newest' | 'oldest';
+
 export function findDuplicateGroups(
   bookmarks: BookmarkItem[],
   mode: 'exact' | 'normalized',
   options?: NormalizeOptions,
+  keepStrategy: DuplicateKeepStrategy = 'newest',
 ): DuplicateGroup[] {
   const map = new Map<string, BookmarkItem[]>();
 
@@ -80,14 +89,47 @@ export function findDuplicateGroups(
   const groups: DuplicateGroup[] = [];
   for (const [key, items] of map.entries()) {
     if (items.length > 1) {
-      const sorted = [...items].sort(
-        (a, b) => (b.dateAdded ?? 0) - (a.dateAdded ?? 0),
-      );
+      const sorted = [...items].sort((a, b) => {
+        if (keepStrategy === 'oldest') {
+          return (
+            (a.dateAdded ?? Number.MAX_SAFE_INTEGER) -
+            (b.dateAdded ?? Number.MAX_SAFE_INTEGER)
+          );
+        }
+        return (b.dateAdded ?? 0) - (a.dateAdded ?? 0);
+      });
       groups.push({ key, items: sorted });
     }
   }
 
   return groups.sort((a, b) => b.items.length - a.items.length);
+}
+
+/**
+ * Re-computes removable duplicates against the latest live bookmark list,
+ * guaranteeing that at least 1 live copy is always preserved in every group.
+ */
+export function computeSafeRemovableDuplicates(
+  liveBookmarks: BookmarkItem[],
+  mode: 'exact' | 'normalized',
+  targetKeys?: Set<string>,
+  options?: NormalizeOptions,
+  keepStrategy: DuplicateKeepStrategy = 'newest',
+): BookmarkItem[] {
+  const freshGroups = findDuplicateGroups(
+    liveBookmarks,
+    mode,
+    options,
+    keepStrategy,
+  );
+  const removable: BookmarkItem[] = [];
+  for (const group of freshGroups) {
+    if (targetKeys && !targetKeys.has(group.key)) continue;
+    if (group.items.length > 1) {
+      removable.push(...group.items.slice(1));
+    }
+  }
+  return removable;
 }
 
 export function findMatchingBookmarksByUrl(
