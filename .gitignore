@@ -6,3 +6,5 @@ release/
 .env
 .env.*
 coverage/
+docs/
+EDGE_STORE.md

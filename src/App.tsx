@@ -39,7 +39,6 @@ import {
   reconcileSnapshot,
   saveScanSnapshot,
   saveSettings,
-  saveSidebarTheme,
   saveWhitelist,
   type SidebarTheme,
 } from './core/storage';
@@ -130,17 +129,6 @@ export default function App() {
     },
     [],
   );
-
-  const handleCycleTheme = async () => {
-    const next: SidebarTheme =
-      themeMode === 'system'
-        ? 'light'
-        : themeMode === 'light'
-          ? 'dark'
-          : 'system';
-    setThemeMode(next);
-    await saveSidebarTheme(next);
-  };
 
   const refreshBookmarks = useCallback(async () => {
     const tree = await loadBookmarkTree();
@@ -526,6 +514,32 @@ export default function App() {
     notify('已导出标准浏览器书签 HTML 备份文件', 'success');
   };
 
+  const handleCloseWorkbench = async () => {
+    if (scanState === 'running' || scanState === 'paused') {
+      const confirmed = window.confirm(
+        '当前正在进行失效书签检测，确定要关闭清理页面吗？',
+      );
+      if (!confirmed) return;
+    }
+
+    if (
+      typeof chrome !== 'undefined' &&
+      chrome.tabs?.getCurrent &&
+      chrome.tabs?.remove
+    ) {
+      try {
+        const currentTab = await chrome.tabs.getCurrent();
+        if (currentTab?.id !== undefined) {
+          await chrome.tabs.remove(currentTab.id);
+          return;
+        }
+      } catch {
+        // Fallback to window.close()
+      }
+    }
+    window.close();
+  };
+
   const tabs: Array<{
     key: TabKey;
     label: string;
@@ -564,14 +578,13 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 pb-16 transition-colors">
       <Header
         totalBookmarks={bookmarks.length}
-        themeMode={themeMode}
-        onCycleTheme={() => void handleCycleTheme()}
         onExportBackup={handleExportBackup}
         onOpenSettings={() => setSettingsOpen(true)}
         onRefreshBookmarks={async () => {
           await refreshBookmarks();
           notify('已重新同步浏览器书签', 'info');
         }}
+        onClosePage={() => void handleCloseWorkbench()}
       />
 
       <main className="mx-auto max-w-7xl px-6 pt-6">

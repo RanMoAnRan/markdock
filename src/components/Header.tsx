@@ -1,40 +1,26 @@
 import {
   BookmarkCheck,
   Download,
-  Monitor,
-  Moon,
   RefreshCw,
   Settings,
-  Sun,
+  X,
 } from 'lucide-react';
-import type { SidebarTheme } from '../core/storage';
 
 interface HeaderProps {
   totalBookmarks: number;
-  themeMode: SidebarTheme;
-  onCycleTheme: () => void;
   onExportBackup: () => void;
   onOpenSettings: () => void;
   onRefreshBookmarks: () => void;
+  onClosePage: () => void;
 }
 
 export function Header({
   totalBookmarks,
-  themeMode,
-  onCycleTheme,
   onExportBackup,
   onOpenSettings,
   onRefreshBookmarks,
+  onClosePage,
 }: HeaderProps) {
-  const ThemeIcon =
-    themeMode === 'dark' ? Moon : themeMode === 'light' ? Sun : Monitor;
-  const themeLabel =
-    themeMode === 'dark'
-      ? '深色'
-      : themeMode === 'light'
-        ? '浅色'
-        : '跟随系统';
-
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200/80 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-3.5">
@@ -60,15 +46,6 @@ export function Header({
         <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={onCycleTheme}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            title={`当前主题：${themeLabel}（点击切换）`}
-          >
-            <ThemeIcon className="h-4 w-4 text-slate-500 dark:text-slate-400" />
-            <span>{themeLabel}</span>
-          </button>
-          <button
-            type="button"
             onClick={onRefreshBookmarks}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors cursor-pointer"
             title="重新读取浏览器书签"
@@ -91,6 +68,15 @@ export function Header({
           >
             <Settings className="h-4 w-4 text-slate-500 dark:text-slate-400" />
             <span>设置</span>
+          </button>
+          <button
+            type="button"
+            onClick={onClosePage}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-600 dark:text-slate-300 hover:border-rose-200 dark:hover:border-rose-800 hover:bg-rose-50 dark:hover:bg-rose-950/60 hover:text-rose-600 dark:hover:text-rose-400 transition-colors cursor-pointer"
+            title="关闭清理页面"
+          >
+            <X className="h-4 w-4" />
+            <span>关闭</span>
           </button>
         </div>
       </div>

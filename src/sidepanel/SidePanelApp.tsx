@@ -33,7 +33,6 @@ import {
 import type { AiSite, DockTarget } from '../types/ai';
 import type {
   BookmarkItem,
-  FolderNode,
   RecycleBinEntry,
   VisitStatsMap,
 } from '../types/bookmark';
@@ -54,7 +53,6 @@ import {
   computeBookmarkMoveTarget,
   createBookmarkItem,
   type DropPosition,
-  extractFolders,
   filterBookmarksByFolder,
   flattenBookmarkTree,
   getAncestorFolderIds,
@@ -110,6 +108,7 @@ import { AiManagerModal } from '../components/AiManagerModal';
 import { AiWorkspace } from '../components/AiWorkspace';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { DockRail } from '../components/DockRail';
+import { FolderTreePicker } from '../components/FolderTreePicker';
 import { SidebarSettingsModal } from '../components/SidebarSettingsModal';
 
 type SidebarView = 'tree' | 'recent' | 'frequent';
@@ -281,7 +280,6 @@ export default function SidePanelApp() {
     id: string;
     position: DropPosition;
   } | null>(null);
-  const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const [modal, setModal] = useState<ModalState>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null);
   const contextMenuOpenRef = useRef(false);
@@ -827,7 +825,6 @@ export default function SidePanelApp() {
     () => new Map(allBookmarks.map((b) => [b.id, b])),
     [allBookmarks],
   );
-  const folders: FolderNode[] = useMemo(() => extractFolders(roots), [roots]);
 
   const pinnedBookmarks = useMemo(
     () =>
@@ -985,53 +982,23 @@ export default function SidePanelApp() {
     }
   };
 
-  // Track whether the Cleaner Workbench tab is currently open in this window
-  const syncWorkbenchOpen = useCallback(async () => {
-    if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.runtime?.getURL) {
-      return;
-    }
-    try {
-      const workbenchUrl = chrome.runtime.getURL('index.html');
-      const tabs = await chrome.tabs.query({ currentWindow: true });
-      const open = tabs.some((t) => t.url?.startsWith(workbenchUrl));
-      setWorkbenchOpen(open);
-    } catch {
-      // Ignore tab query errors
-    }
-  }, []);
-
-  useEffect(() => {
-    void syncWorkbenchOpen();
-    if (typeof chrome === 'undefined' || !chrome.tabs) return;
-    const handler = () => {
-      void syncWorkbenchOpen();
-    };
-    chrome.tabs.onCreated?.addListener(handler);
-    chrome.tabs.onRemoved?.addListener(handler);
-    chrome.tabs.onUpdated?.addListener(handler);
-    return () => {
-      chrome.tabs.onCreated?.removeListener(handler);
-      chrome.tabs.onRemoved?.removeListener(handler);
-      chrome.tabs.onUpdated?.removeListener(handler);
-    };
-  }, [syncWorkbenchOpen]);
-
-  const handleToggleCleanerWorkbench = async () => {
+  const handleOpenCleanerWorkbench = async () => {
     if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.runtime?.getURL) {
       return;
     }
     const workbenchUrl = chrome.runtime.getURL('index.html');
     const tabs = await chrome.tabs.query({ currentWindow: true });
-    const existingIds = tabs
-      .filter((t) => t.url?.startsWith(workbenchUrl) && t.id !== undefined)
-      .map((t) => t.id as number);
+    const workbenchTabs = tabs.filter(
+      (t) => (t.url ?? t.pendingUrl)?.startsWith(workbenchUrl) && t.id !== undefined,
+    );
+    const activeWorkbenchTab = workbenchTabs.find((t) => t.active);
 
-    if (existingIds.length > 0) {
-      await chrome.tabs.remove(existingIds);
-      setWorkbenchOpen(false);
+    if (activeWorkbenchTab?.id !== undefined) {
+      await chrome.tabs.remove(activeWorkbenchTab.id);
+    } else if (workbenchTabs[0]?.id !== undefined) {
+      await chrome.tabs.update(workbenchTabs[0].id, { active: true });
     } else {
       await chrome.tabs.create({ url: workbenchUrl });
-      setWorkbenchOpen(true);
     }
   };
 
@@ -1955,20 +1922,12 @@ export default function SidePanelApp() {
           </button>
           <button
             type="button"
-            onClick={handleToggleCleanerWorkbench}
-            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium shadow-xs transition-colors cursor-pointer ${
-              workbenchOpen
-                ? 'bg-slate-800 dark:bg-slate-700 text-white hover:bg-slate-700 dark:hover:bg-slate-600'
-                : 'bg-blue-600 text-white hover:bg-blue-700'
-            }`}
-            title={
-              workbenchOpen
-                ? '点击收起清理工作台标签页'
-                : '打开全屏失效清理 / 去重 / 回收站工作台'
-            }
+            onClick={handleOpenCleanerWorkbench}
+            className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium shadow-xs transition-colors cursor-pointer bg-blue-600 text-white hover:bg-blue-700"
+            title="打开清理工作台（已打开时切换定位，当前页再次点击关闭）"
           >
             <Radar className="h-3.5 w-3.5" />
-            <span>{workbenchOpen ? '收起' : '清理'}</span>
+            <span>清理</span>
           </button>
           {dockCollapsed && effectiveDockPosition === 'right' && (
             <button
@@ -2929,24 +2888,13 @@ export default function SidePanelApp() {
             )}
 
             {modal.mode === 'add_bookmark' && (
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
-                  保存到目录
-                </label>
-                <select
-                  value={modal.parentId}
-                  onChange={(e) =>
-                    setModal({ ...modal, parentId: e.target.value })
-                  }
-                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 px-2.5 py-1.5 text-xs focus:border-blue-500 focus:outline-none"
-                >
-                  {folders.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.path.join(' / ')}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <FolderTreePicker
+                roots={roots}
+                selectedFolderId={modal.parentId}
+                onSelect={(folderId) =>
+                  setModal({ ...modal, parentId: folderId })
+                }
+              />
             )}
 
             {modal.mode === 'add_bookmark' && duplicateMatches.length > 0 && (
