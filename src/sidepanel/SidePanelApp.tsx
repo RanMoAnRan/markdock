@@ -2,10 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   AppWindow,
+  ArrowUp,
   Bookmark,
   BookmarkPlus,
   ChevronDown,
   ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Clock,
   Copy,
   EyeOff,
@@ -240,6 +243,7 @@ function collectSubfolderIds(node: chrome.bookmarks.BookmarkTreeNode): string[] 
 
 export default function SidePanelApp() {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const activeItemRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const nodeRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -271,6 +275,7 @@ export default function SidePanelApp() {
 
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const [dragItem, setDragItem] = useState<{
     source: 'tree' | 'pinned';
     id: string;
@@ -374,6 +379,15 @@ export default function SidePanelApp() {
       searchInputRef.current?.select();
     });
   }, []);
+
+  const scrollToTop = useCallback(() => {
+    scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    setShowScrollTop((el?.scrollTop ?? 0) > 240);
+  }, [activeView, query]);
 
   const refreshTree = useCallback(async () => {
     const tree = await loadBookmarkTree();
@@ -1067,14 +1081,25 @@ export default function SidePanelApp() {
     await saveExpandedFolders([...next]);
   };
 
-  const handleExpandAllFolders = async () => {
-    const allIds: string[] = [];
+  const allFolderIds = useMemo(() => {
+    const ids: string[] = [];
     for (const root of roots) {
       for (const id of collectSubfolderIds(root)) {
-        if (id !== '0') allIds.push(id);
+        if (id !== '0') ids.push(id);
       }
     }
-    const next = new Set(allIds);
+    return ids;
+  }, [roots]);
+
+  const isAllFoldersExpanded = useMemo(
+    () =>
+      allFolderIds.length > 0 &&
+      allFolderIds.every((id) => expandedIds.has(id)),
+    [allFolderIds, expandedIds],
+  );
+
+  const handleExpandAllFolders = async () => {
+    const next = new Set(allFolderIds);
     setExpandedIds(next);
     await saveExpandedFolders([...next]);
   };
@@ -1082,6 +1107,14 @@ export default function SidePanelApp() {
   const handleCollapseAllFolders = async () => {
     setExpandedIds(new Set());
     await saveExpandedFolders([]);
+  };
+
+  const handleToggleExpandAllFolders = async () => {
+    if (isAllFoldersExpanded) {
+      await handleCollapseAllFolders();
+    } else {
+      await handleExpandAllFolders();
+    }
   };
 
   const handleUndoDelete = async (entry: RecycleBinEntry) => {
@@ -1869,7 +1902,7 @@ export default function SidePanelApp() {
         <div
           className={
             activeAiSite === null
-              ? 'flex flex-1 min-h-0 flex-col'
+              ? 'relative flex flex-1 min-h-0 flex-col'
               : 'hidden'
           }
         >
@@ -1994,7 +2027,16 @@ export default function SidePanelApp() {
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setActiveView(key)}
+                  onClick={() => {
+                    if (activeView === key) {
+                      scrollToTop();
+                    } else {
+                      setActiveView(key);
+                      scrollContainerRef.current?.scrollTo({ top: 0 });
+                      setShowScrollTop(false);
+                    }
+                  }}
+                  title={active ? `${label}（点击回到顶部）` : label}
                   className={`flex items-center justify-center gap-1 rounded-lg py-1.5 text-[11px] font-medium transition-colors cursor-pointer ${
                     active
                       ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-2xs'
@@ -2012,9 +2054,12 @@ export default function SidePanelApp() {
 
       {/* Main Scroll Area */}
       <div
+        ref={scrollContainerRef}
         className="flex-1 overflow-y-auto px-2 py-2 space-y-3"
-        onScroll={() => {
+        onScroll={(e) => {
           if (contextMenu) setContextMenu(null);
+          const shouldShow = e.currentTarget.scrollTop > 240;
+          setShowScrollTop((prev) => (prev === shouldShow ? prev : shouldShow));
         }}
       >
         {query.trim() ? (
@@ -2491,30 +2536,62 @@ export default function SidePanelApp() {
             <section>
               <div className="mb-1 flex items-center justify-between px-2 text-[11px] font-semibold text-slate-400 dark:text-slate-500">
                 <span>全部目录（支持拖拽排序）</span>
-                <div className="flex items-center gap-1.5 font-normal">
-                  <button
-                    type="button"
-                    onClick={() => void handleExpandAllFolders()}
-                    className="rounded px-1.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer transition-colors"
-                    title="展开全部文件夹"
-                  >
-                    全部展开
-                  </button>
-                  <span className="text-slate-300 dark:text-slate-700">|</span>
-                  <button
-                    type="button"
-                    onClick={() => void handleCollapseAllFolders()}
-                    className="rounded px-1.5 py-0.5 text-[10px] text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer transition-colors"
-                    title="收起全部文件夹"
-                  >
-                    全部收起
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => void handleToggleExpandAllFolders()}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-normal text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer transition-colors"
+                  title={isAllFoldersExpanded ? '收起全部文件夹' : '展开全部文件夹'}
+                >
+                  {isAllFoldersExpanded ? (
+                    <>
+                      <ChevronsDownUp className="h-3 w-3" />
+                      <span>全部收起</span>
+                    </>
+                  ) : (
+                    <>
+                      <ChevronsUpDown className="h-3 w-3" />
+                      <span>全部展开</span>
+                    </>
+                  )}
+                </button>
               </div>
               <div className="space-y-0.5">{renderTreeNodes(roots, 0)}</div>
             </section>
           </>
         )}
+      </div>
+
+      {/* Floating Scroll-to-Top & Collapse-All Controls */}
+      <div
+        className={`absolute bottom-4 right-3 z-20 flex flex-col items-center gap-1.5 transition-all duration-200 ${
+          showScrollTop
+            ? 'opacity-100 translate-y-0'
+            : 'pointer-events-none opacity-0 translate-y-2'
+        }`}
+      >
+        {!query.trim() && activeView === 'tree' && (
+          <button
+            type="button"
+            onClick={() => {
+              void handleCollapseAllFolders();
+              scrollToTop();
+            }}
+            title="全部收起并回到顶部"
+            aria-label="全部收起并回到顶部"
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200/90 dark:border-slate-700/90 bg-white/90 dark:bg-slate-800/90 text-slate-600 dark:text-slate-300 shadow-md backdrop-blur-xs hover:border-blue-300 dark:hover:border-blue-700 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+          >
+            <ChevronsDownUp className="h-3.5 w-3.5" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={scrollToTop}
+          title="回到顶部"
+          aria-label="回到顶部"
+          className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200/90 dark:border-slate-700/90 bg-white/90 dark:bg-slate-800/90 text-slate-600 dark:text-slate-300 shadow-md backdrop-blur-xs hover:border-blue-300 dark:hover:border-blue-700 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+        >
+          <ArrowUp className="h-4 w-4" />
+        </button>
       </div>
         </div>
       </div>
