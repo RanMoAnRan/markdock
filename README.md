@@ -95,4 +95,4 @@ markdock/
 
 ## 隐私与安全
 
-MarkDock **纯本地运行**，无任何后端服务器或第三方统计 SDK。所有书签数据、访问频次统计、白名单、设置与回收站备份均仅保存在本地 `chrome.storage.local` 中。详情请参阅 [PRIVACY.md](./PRIVACY.md)。
+MarkDock **纯本地运行**，无任何后端服务器或第三方统计 SDK。所有书签数据、访问频次统计、白名单、设置与回收站备份均仅保存在本地 `chrome.storage.local` 中。
